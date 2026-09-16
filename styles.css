@@ -113,13 +113,6 @@ kbd {
 
 /* An unclicked pane the solver isn't highlighting. */
 .slot.pane { background: rgba(255, 255, 255, 0.11); }
-.slot.pane::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-}
 .slot.done { background: transparent; color: transparent; cursor: default; }
 .slot.next-1 { background: var(--order1); color: #0d1a0d; }
 .slot.next-2 { background: var(--order2); color: #0d1a0d; }
@@ -152,9 +145,6 @@ kbd {
 .terminal.normal .slot.next-1 .pane-item { outline: 3px solid var(--order1); outline-offset: -3px; }
 .terminal.normal .slot.next-2 .pane-item { outline: 3px solid var(--order2); outline-offset: -3px; }
 .terminal.normal .slot.next-3 .pane-item { outline: 3px solid var(--order3); outline-offset: -3px; }
-
-/* Odin render type: same panel, with slot outlines kept visible. */
-.terminal.odin .slot { box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.08); }
 
 .message {
   position: absolute;

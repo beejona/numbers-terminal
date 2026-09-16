@@ -17,6 +17,7 @@ const DEFAULTS = Object.freeze({
   showNumbers: false,
   blockIncorrect: true,
   clientPrediction: true,
+  hoverMode: false,
   resolveTimeout: 600,
   firstClickProt: 0,
   ping: 0,
@@ -49,6 +50,8 @@ let startedAt = 0;
 let blockedUntil = 0;
 let misclicks = 0;
 let running = false;
+/** Which pane the cursor is over, for hover mode. */
+let hoveredIndex = -1;
 let finishing = false;
 
 /* ---------- settings ---------- */
@@ -95,6 +98,7 @@ function shuffled(count) {
 function newTerminal() {
   panes = shuffled(PANES).map(number => ({ number, clicked: false, predicted: false }));
   misclicks = 0;
+  hoveredIndex = -1;
   finishing = false;
   running = true;
   startedAt = performance.now();
@@ -132,6 +136,13 @@ function build() {
       event.preventDefault();
       clickPane(index);
     });
+    slot.addEventListener("pointerenter", () => {
+      hoveredIndex = index;
+      if (settings.hoverMode) clickPane(index, true);
+    });
+    slot.addEventListener("pointerleave", () => {
+      if (hoveredIndex === index) hoveredIndex = -1;
+    });
     elements.terminal.append(slot);
   });
 }
@@ -155,13 +166,15 @@ function render() {
   });
 }
 
-function clickPane(index) {
+function clickPane(index, viaHover = false) {
   const pane = panes[index];
   if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
   // First click protection: the mod swallows clicks for a moment after the terminal opens.
   if (performance.now() < blockedUntil) return;
 
   if (pane.number !== nextNumber()) {
+    // Sweeping the cursor across panes in hover mode isn't a misclick.
+    if (viaHover) return;
     if (!settings.blockIncorrect) {
       misclicks += 1;
       elements.misclicks.textContent = String(misclicks);
@@ -195,6 +208,7 @@ function clickPane(index) {
     pane.predicted = false;
     render();
     if (solved) finish();
+    else if (settings.hoverMode && hoveredIndex >= 0) clickPane(hoveredIndex, true);
   };
   if (settings.ping > 0) setTimeout(resolve, settings.ping);
   else resolve();
@@ -246,7 +260,7 @@ function tick() {
 
 const CONTROLS = [
   "renderType", "termSize", "normalTermSize", "roundness", "gap", "showNumbers",
-  "blockIncorrect", "clientPrediction", "resolveTimeout", "firstClickProt", "ping", "autoRestart",
+  "blockIncorrect", "clientPrediction", "hoverMode", "resolveTimeout", "firstClickProt", "ping", "autoRestart",
   "background", "order1", "order2", "order3"
 ];
 
