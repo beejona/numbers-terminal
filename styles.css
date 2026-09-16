@@ -78,7 +78,7 @@ kbd {
 
 /* ---------- terminal ---------- */
 
-.stage { flex: 1; display: grid; place-items: center; padding: 32px 20px 56px; }
+.stage { flex: 1; display: grid; place-items: center; padding: 32px 20px 56px; overflow: auto; }
 .terminal-wrap { position: relative; }
 
 .terminal {
