@@ -127,7 +127,11 @@ function build() {
       Object.assign(document.createElement("span"), { className: "pane-item" }),
       Object.assign(document.createElement("span"), { className: "count" })
     );
-    slot.addEventListener("click", () => clickPane(index));
+    slot.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      clickPane(index);
+    });
     elements.terminal.append(slot);
   });
 }
@@ -186,12 +190,14 @@ function clickPane(index) {
   const solved = panes.every(other => other === pane || other.clicked);
   if (solved) finishing = true;
 
-  setTimeout(() => {
+  const resolve = () => {
     pane.clicked = true;
     pane.predicted = false;
     render();
     if (solved) finish();
-  }, settings.ping);
+  };
+  if (settings.ping > 0) setTimeout(resolve, settings.ping);
+  else resolve();
 }
 
 function flashWrong(index) {
@@ -221,7 +227,7 @@ function finish() {
     `<small>${settings.autoRestart ? "Next terminal opening..." : "Press R for another"}</small>`;
   elements.message.hidden = false;
 
-  if (settings.autoRestart) setTimeout(newTerminal, 1200);
+  if (settings.autoRestart) setTimeout(newTerminal, 800);
 }
 
 function formatTime(seconds) {

@@ -107,11 +107,12 @@ kbd {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #f4f7fa;
-  transition: background-color 90ms linear, opacity 90ms linear;
+  touch-action: manipulation;
+  transition: background-color 40ms linear;
 }
 
 /* An unclicked pane the solver isn't highlighting. */
-.slot.pane { background: rgba(255, 255, 255, 0.07); }
+.slot.pane { background: rgba(255, 255, 255, 0.11); }
 .slot.pane::after {
   content: "";
   position: absolute;
@@ -167,6 +168,7 @@ kbd {
   letter-spacing: 0.3px;
   pointer-events: none;
 }
+.message[hidden] { display: none; }
 .message small { display: block; margin-top: 6px; font-size: 13px; font-weight: 500; color: var(--muted); text-align: center; }
 
 /* ---------- settings ---------- */
