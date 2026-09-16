@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Numbers Terminal Simulator</title>
+<meta name="description" content="Practice the Hypixel SkyBlock floor 7 numbers terminal (Click in order!) with an Odin-style solver.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Numbers Terminal</h1>
+      <p>Click in order! &mdash; floor 7 terminal practice</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span class="label">Time</span><span class="value" id="time">0.000s</span></div>
+      <div class="stat"><span class="label">Best</span><span class="value" id="best">&ndash;</span></div>
+      <div class="stat"><span class="label">Last</span><span class="value" id="last">&ndash;</span></div>
+      <div class="stat"><span class="label">Misclicks</span><span class="value" id="misclicks">0</span></div>
+    </div>
+
+    <div class="actions">
+      <button id="restart" type="button">New terminal <kbd>R</kbd></button>
+      <button id="toggle-settings" type="button">Settings <kbd>S</kbd></button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="terminal-wrap">
+      <div id="terminal" class="terminal" role="grid" aria-label="Numbers terminal"></div>
+      <div id="message" class="message" hidden></div>
+    </div>
+  </main>
+
+  <aside id="settings" class="settings" hidden>
+    <div class="settings-head">
+      <h2>Terminal Solver</h2>
+      <button id="close-settings" class="icon" type="button" aria-label="Close settings">&times;</button>
+    </div>
+
+    <section>
+      <h3>Appearance</h3>
+      <label class="row">
+        <span>Render type</span>
+        <select id="renderType">
+          <option>Odin</option>
+          <option>Normal</option>
+          <option>Custom GUI</option>
+        </select>
+      </label>
+      <label class="row"><span>Term Size</span><input type="range" id="termSize" min="1" max="6" step="0.1"><output for="termSize"></output></label>
+      <label class="row"><span>Normal Term Size</span><input type="range" id="normalTermSize" min="1" max="6" step="0.1"><output for="normalTermSize"></output></label>
+      <label class="row"><span>Roundness</span><input type="range" id="roundness" min="0" max="20" step="1"><output for="roundness"></output></label>
+      <label class="row"><span>Slot gap</span><input type="range" id="gap" min="0" max="12" step="1"><output for="gap"></output></label>
+      <label class="row switch"><span>Show Numbers</span><input type="checkbox" id="showNumbers"></label>
+    </section>
+
+    <section>
+      <h3>Functionality</h3>
+      <label class="row switch"><span>Block Incorrect Clicks</span><input type="checkbox" id="blockIncorrect"></label>
+      <label class="row switch"><span>Client Prediction</span><input type="checkbox" id="clientPrediction"></label>
+      <label class="row"><span>Resolve timeout</span><input type="range" id="resolveTimeout" min="100" max="2000" step="50"><output for="resolveTimeout"></output></label>
+      <label class="row"><span>First Click Prot</span><input type="range" id="firstClickProt" min="0" max="1000" step="50"><output for="firstClickProt"></output></label>
+      <label class="row"><span>Ping</span><input type="range" id="ping" min="0" max="400" step="5"><output for="ping"></output></label>
+      <label class="row switch"><span>Auto restart</span><input type="checkbox" id="autoRestart"></label>
+    </section>
+
+    <section>
+      <h3>Colors</h3>
+      <label class="row"><span>Background</span><input type="color" id="background"></label>
+      <label class="row"><span>Order 1</span><input type="color" id="order1"></label>
+      <label class="row"><span>Order 2</span><input type="color" id="order2"></label>
+      <label class="row"><span>Order 3</span><input type="color" id="order3"></label>
+    </section>
+
+    <section class="settings-foot">
+      <button id="reset-settings" type="button">Reset to Odin defaults</button>
+      <button id="reset-pb" type="button" class="ghost">Clear best time</button>
+    </section>
+  </aside>
+
+  <script src="app.js"></script>
+</body>
+</html>
