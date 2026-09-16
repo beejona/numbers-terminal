@@ -18,6 +18,8 @@ const DEFAULTS = Object.freeze({
   blockIncorrect: true,
   clientPrediction: true,
   hoverMode: false,
+  dropKey: false,
+  dropKeyBind: "KeyQ",
   resolveTimeout: 600,
   firstClickProt: 0,
   ping: 0,
@@ -52,6 +54,9 @@ let misclicks = 0;
 let running = false;
 /** Which pane the cursor is over, for hover mode. */
 let hoveredIndex = -1;
+/** Whether the drop key is down, and whether the settings panel is waiting for a new one. */
+let dropKeyHeld = false;
+let bindingDropKey = false;
 let finishing = false;
 
 /* ---------- settings ---------- */
@@ -138,7 +143,7 @@ function build() {
     });
     slot.addEventListener("pointerenter", () => {
       hoveredIndex = index;
-      if (settings.hoverMode) clickPane(index, true);
+      if (hoverClicks()) clickPane(index, true);
     });
     slot.addEventListener("pointerleave", () => {
       if (hoveredIndex === index) hoveredIndex = -1;
@@ -164,6 +169,11 @@ function render() {
     slot.classList.toggle("next-3", !done && rank === 2);
     slot.querySelector(".count").textContent = settings.showNumbers && !done ? String(pane.number) : "";
   });
+}
+
+/** Whether moving the cursor onto a pane should click it right now. */
+function hoverClicks() {
+  return settings.hoverMode || (settings.dropKey && dropKeyHeld);
 }
 
 function clickPane(index, viaHover = false) {
@@ -208,7 +218,7 @@ function clickPane(index, viaHover = false) {
     pane.predicted = false;
     render();
     if (solved) finish();
-    else if (settings.hoverMode && hoveredIndex >= 0) clickPane(hoveredIndex, true);
+    else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, true);
   };
   if (settings.ping > 0) setTimeout(resolve, settings.ping);
   else resolve();
@@ -260,7 +270,7 @@ function tick() {
 
 const CONTROLS = [
   "renderType", "termSize", "normalTermSize", "roundness", "gap", "showNumbers",
-  "blockIncorrect", "clientPrediction", "hoverMode", "resolveTimeout", "firstClickProt", "ping", "autoRestart",
+  "blockIncorrect", "clientPrediction", "hoverMode", "dropKey", "resolveTimeout", "firstClickProt", "ping", "autoRestart",
   "background", "order1", "order2", "order3"
 ];
 
@@ -322,7 +332,46 @@ document.getElementById("reset-pb").addEventListener("click", () => {
   elements.best.classList.remove("fresh");
 });
 
+const dropKeyButton = document.getElementById("dropKeyBind");
+
+function keyLabel(code) {
+  if (!code) return "None";
+  if (code.startsWith("Key")) return code.slice(3);
+  if (code.startsWith("Digit")) return code.slice(5);
+  if (code.startsWith("Numpad")) return `Numpad ${code.slice(6)}`;
+  return code.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function stopBinding() {
+  bindingDropKey = false;
+  dropKeyButton.classList.remove("listening");
+  dropKeyButton.textContent = keyLabel(settings.dropKeyBind);
+}
+
+dropKeyButton.addEventListener("click", () => {
+  bindingDropKey = true;
+  dropKeyButton.classList.add("listening");
+  dropKeyButton.textContent = "Press a key";
+});
+
 document.addEventListener("keydown", event => {
+  if (bindingDropKey) {
+    event.preventDefault();
+    if (event.key !== "Escape") {
+      settings.dropKeyBind = event.code;
+      saveSettings();
+    }
+    stopBinding();
+    return;
+  }
+
+  if (settings.dropKey && event.code === settings.dropKeyBind) {
+    dropKeyHeld = true;
+    // Pressing it while already over a pane counts too, not just moving onto one.
+    if (hoveredIndex >= 0) clickPane(hoveredIndex, true);
+    return;
+  }
+
   if (event.target.matches("input, select")) return;
   const key = event.key.toLowerCase();
   if (key === "r") newTerminal();
@@ -330,7 +379,15 @@ document.addEventListener("keydown", event => {
   else if (event.key === "Escape") toggleSettings(false);
 });
 
+document.addEventListener("keyup", event => {
+  if (event.code === settings.dropKeyBind) dropKeyHeld = false;
+});
+
+// Alt-tabbing with the key down would otherwise leave it stuck.
+if (typeof window !== "undefined") window.addEventListener("blur", () => { dropKeyHeld = false; });
+
 elements.best.textContent = formatTime(best);
+stopBinding();
 bindControls();
 syncControls();
 applySettings();

@@ -21,10 +21,14 @@ Your best time is kept in the browser, on your machine only.
 Appearance: Render type (Odin / Normal / Custom GUI), Term Size, Normal Term Size, Roundness,
 Slot gap, Show Numbers.
 
-Functionality: Block Incorrect Clicks, Client Prediction, Resolve timeout, First Click Prot, Ping,
-Auto restart.
+Functionality: Block Incorrect Clicks, Client Prediction, Hover mode, Drop key (and the key it's
+bound to), Resolve timeout, First Click Prot, Ping, Auto restart.
 
 Colors: Background, Order 1, Order 2, Order 3.
+
+**Drop key** is the in-game trick: hold the key (Q by default, rebindable) and sweep the cursor
+over the panes to click them. **Hover mode** is the same thing without holding anything. Sweeping
+over the wrong panes never counts as a misclick.
 
 **Ping** delays every click the way the server does, and **Client Prediction** clears the pane
 straight away instead of waiting for it - so with a high ping and prediction off, the terminal

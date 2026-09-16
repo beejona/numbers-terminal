@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Numbers Terminal Simulator</title>
 <meta name="description" content="Practice the Hypixel SkyBlock floor 7 numbers terminal (Click in order!) with an Odin-style solver.">
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <header class="topbar">
@@ -62,6 +62,8 @@
       <label class="row switch"><span>Block Incorrect Clicks</span><input type="checkbox" id="blockIncorrect"></label>
       <label class="row switch"><span>Client Prediction</span><input type="checkbox" id="clientPrediction"></label>
       <label class="row switch"><span>Hover mode</span><input type="checkbox" id="hoverMode"></label>
+      <label class="row switch"><span>Drop key</span><input type="checkbox" id="dropKey"></label>
+      <div class="row switch"><span>Drop key bind</span><button type="button" id="dropKeyBind" class="keybind">Q</button></div>
       <label class="row"><span>Resolve timeout</span><input type="range" id="resolveTimeout" min="100" max="2000" step="50"><output for="resolveTimeout"></output></label>
       <label class="row"><span>First Click Prot</span><input type="range" id="firstClickProt" min="0" max="1000" step="50"><output for="firstClickProt"></output></label>
       <label class="row"><span>Ping</span><input type="range" id="ping" min="0" max="400" step="5"><output for="ping"></output></label>
@@ -82,6 +84,6 @@
     </section>
   </aside>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

@@ -208,6 +208,18 @@ kbd {
 }
 .settings input[type="color"] { height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: #11141a; }
 .settings input[type="range"] { width: 120px; }
+.settings .keybind {
+  width: 120px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #11141a;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings .keybind.listening { border-color: var(--accent); color: var(--accent); }
 .settings input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
 .settings-foot { display: flex; gap: 8px; margin-top: 26px; }
 
