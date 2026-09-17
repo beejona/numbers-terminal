@@ -3,9 +3,9 @@
 // The terminal itself: a 4-row chest titled "Click in order!", whose 14 numbered panes sit in a
 // 2 x 7 block inset one row and one column. Only that block is ever clickable, so that's all the
 // page draws.
-const COLUMNS = 7;
 const ROWS = 2;
-const PANES = COLUMNS * ROWS;
+const FULL_COLUMNS = 7;
+const FULL_COUNT = ROWS * FULL_COLUMNS;
 
 // Odin's own defaults for its terminal solver and simulator.
 const DEFAULTS = Object.freeze({
@@ -75,6 +75,7 @@ function saveSettings() {
 }
 
 function applySettings() {
+  applyGrid(paneCount());
   const size = settings.renderType === "Normal" ? settings.normalTermSize : settings.termSize;
   const root = document.documentElement.style;
   root.setProperty("--slot", `${Math.round(size * 20)}px`);
@@ -100,10 +101,15 @@ function shuffle(list) {
   return list;
 }
 
-/** How many numbers this terminal has; whatever is left of the 2 x 7 grid stays empty. */
+/** How many numbers this terminal has. */
 function paneCount() {
   const count = Math.round(Number(settings.numberCount));
-  return Number.isFinite(count) ? Math.min(Math.max(count, 1), PANES) : PANES;
+  return Number.isFinite(count) ? Math.min(Math.max(count, 1), FULL_COUNT) : FULL_COUNT;
+}
+
+/** Two rows, as wide as the count needs: 2 x 7 for fourteen, 2 x 5 for ten. */
+function applyGrid(count) {
+  document.documentElement.style.setProperty("--columns", String(Math.ceil(count / ROWS)));
 }
 
 /** A ten number run isn't comparable to a fourteen, so each count keeps its own best. */
@@ -118,9 +124,9 @@ function loadBest() {
 
 function newTerminal() {
   const count = paneCount();
-  // The numbers land anywhere in the grid; any slots left over stay empty.
-  const values = shuffle(Array.from({ length: PANES }, (_, index) => (index < count ? index + 1 : null)));
-  panes = values.map(number => (number === null ? { empty: true } : { number, clicked: false, predicted: false }));
+  applyGrid(count);
+  panes = shuffle(Array.from({ length: count }, (_, index) => index + 1))
+    .map(number => ({ number, clicked: false, predicted: false }));
   best = loadBest();
   elements.best.textContent = formatTime(best);
   misclicks = 0;
@@ -141,8 +147,7 @@ function newTerminal() {
 function nextNumber() {
   let next = null;
   for (const pane of panes) {
-    if (pane.empty || pane.clicked) continue;
-    if (next === null || pane.number < next) next = pane.number;
+    if (!pane.clicked && (next === null || pane.number < next)) next = pane.number;
   }
   return next;
 }
@@ -181,17 +186,15 @@ function render() {
   panes.forEach((pane, index) => {
     const slot = slots[index];
     if (!slot) return;
-    const empty = Boolean(pane.empty);
-    const done = !empty && (pane.clicked || pane.predicted);
-    const rank = empty || next === null ? -1 : pane.number - next;
+    const done = pane.clicked || pane.predicted;
+    const rank = next === null ? -1 : pane.number - next;
 
-    slot.classList.toggle("empty", empty);
     slot.classList.toggle("done", done);
-    slot.classList.toggle("pane", !empty && !done);
+    slot.classList.toggle("pane", !done);
     slot.classList.toggle("next-1", !done && rank === 0);
     slot.classList.toggle("next-2", !done && rank === 1);
     slot.classList.toggle("next-3", !done && rank === 2);
-    slot.querySelector(".count").textContent = settings.showNumbers && !empty && !done ? String(pane.number) : "";
+    slot.querySelector(".count").textContent = settings.showNumbers && !done ? String(pane.number) : "";
   });
 }
 
@@ -202,7 +205,7 @@ function hoverClicks() {
 
 function clickPane(index, viaHover = false) {
   const pane = panes[index];
-  if (!running || finishing || !pane || pane.empty || pane.clicked || pane.predicted) return;
+  if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
   // First click protection: the mod swallows clicks for a moment after the terminal opens.
   if (performance.now() < blockedUntil) return;
 
@@ -234,7 +237,7 @@ function clickPane(index, viaHover = false) {
     }
   }
 
-  const solved = panes.every(other => other === pane || other.clicked || other.empty);
+  const solved = panes.every(other => other === pane || other.clicked);
   if (solved) finishing = true;
 
   const resolve = () => {
@@ -414,7 +417,7 @@ if (typeof window !== "undefined") window.addEventListener("blur", () => { dropK
 
 // Best times used to be stored without a count; keep that one as the fourteen number best.
 const legacyBest = localStorage.getItem(BEST_KEY);
-if (legacyBest && !localStorage.getItem(bestKeyFor(PANES))) localStorage.setItem(bestKeyFor(PANES), legacyBest);
+if (legacyBest && !localStorage.getItem(bestKeyFor(FULL_COUNT))) localStorage.setItem(bestKeyFor(FULL_COUNT), legacyBest);
 
 stopBinding();
 bindControls();
