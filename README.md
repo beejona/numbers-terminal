@@ -21,10 +21,13 @@ Your best time is kept in the browser, on your machine only.
 Appearance: Render type (Odin / Normal / Custom GUI), Term Size, Normal Term Size, Roundness,
 Slot gap, Show Numbers.
 
-Functionality: Block Incorrect Clicks, Client Prediction, Hover mode, Drop key (and the key it's
-bound to), Resolve timeout, First Click Prot, Ping, Auto restart.
+Functionality: Numbers (14 or 10), Block Incorrect Clicks, Client Prediction, Hover mode, Drop key
+(and the key it's bound to), Resolve timeout, First Click Prot, Ping, Auto restart.
 
 Colors: Background, Order 1, Order 2, Order 3.
+
+**Numbers** shortens the run to ten clicks, scattered through the same 2x7 grid with the spare
+slots left empty. Each count keeps its own best time.
 
 **Drop key** is the in-game trick: hold the key (Q by default, rebindable) and sweep the cursor
 over the panes to click them. **Hover mode** is the same thing without holding anything. Sweeping

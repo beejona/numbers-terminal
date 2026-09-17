@@ -15,6 +15,7 @@ const DEFAULTS = Object.freeze({
   roundness: 0,
   gap: 0,
   showNumbers: false,
+  numberCount: 14,
   blockIncorrect: true,
   clientPrediction: true,
   hoverMode: false,
@@ -44,7 +45,7 @@ const elements = {
 };
 
 let settings = loadSettings();
-let best = Number(localStorage.getItem(BEST_KEY)) || null;
+let best = null;
 
 /** One run of the terminal. */
 let panes = [];
@@ -91,17 +92,37 @@ function applySettings() {
 
 /* ---------- a run ---------- */
 
-function shuffled(count) {
-  const numbers = Array.from({ length: count }, (_, i) => i + 1);
-  for (let i = numbers.length - 1; i > 0; i--) {
+function shuffle(list) {
+  for (let i = list.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [numbers[i], numbers[j]] = [numbers[j], numbers[i]];
+    [list[i], list[j]] = [list[j], list[i]];
   }
-  return numbers;
+  return list;
+}
+
+/** How many numbers this terminal has; whatever is left of the 2 x 7 grid stays empty. */
+function paneCount() {
+  const count = Math.round(Number(settings.numberCount));
+  return Number.isFinite(count) ? Math.min(Math.max(count, 1), PANES) : PANES;
+}
+
+/** A ten number run isn't comparable to a fourteen, so each count keeps its own best. */
+function bestKeyFor(count) {
+  return `${BEST_KEY}.${count}`;
+}
+
+function loadBest() {
+  const stored = Number(localStorage.getItem(bestKeyFor(paneCount())));
+  return stored > 0 ? stored : null;
 }
 
 function newTerminal() {
-  panes = shuffled(PANES).map(number => ({ number, clicked: false, predicted: false }));
+  const count = paneCount();
+  // The numbers land anywhere in the grid; any slots left over stay empty.
+  const values = shuffle(Array.from({ length: PANES }, (_, index) => (index < count ? index + 1 : null)));
+  panes = values.map(number => (number === null ? { empty: true } : { number, clicked: false, predicted: false }));
+  best = loadBest();
+  elements.best.textContent = formatTime(best);
   misclicks = 0;
   hoveredIndex = -1;
   finishing = false;
@@ -120,7 +141,8 @@ function newTerminal() {
 function nextNumber() {
   let next = null;
   for (const pane of panes) {
-    if (!pane.clicked && (next === null || pane.number < next)) next = pane.number;
+    if (pane.empty || pane.clicked) continue;
+    if (next === null || pane.number < next) next = pane.number;
   }
   return next;
 }
@@ -159,15 +181,17 @@ function render() {
   panes.forEach((pane, index) => {
     const slot = slots[index];
     if (!slot) return;
-    const done = pane.clicked || pane.predicted;
-    const rank = next === null ? -1 : pane.number - next;
+    const empty = Boolean(pane.empty);
+    const done = !empty && (pane.clicked || pane.predicted);
+    const rank = empty || next === null ? -1 : pane.number - next;
 
+    slot.classList.toggle("empty", empty);
     slot.classList.toggle("done", done);
-    slot.classList.toggle("pane", !done);
+    slot.classList.toggle("pane", !empty && !done);
     slot.classList.toggle("next-1", !done && rank === 0);
     slot.classList.toggle("next-2", !done && rank === 1);
     slot.classList.toggle("next-3", !done && rank === 2);
-    slot.querySelector(".count").textContent = settings.showNumbers && !done ? String(pane.number) : "";
+    slot.querySelector(".count").textContent = settings.showNumbers && !empty && !done ? String(pane.number) : "";
   });
 }
 
@@ -178,7 +202,7 @@ function hoverClicks() {
 
 function clickPane(index, viaHover = false) {
   const pane = panes[index];
-  if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
+  if (!running || finishing || !pane || pane.empty || pane.clicked || pane.predicted) return;
   // First click protection: the mod swallows clicks for a moment after the terminal opens.
   if (performance.now() < blockedUntil) return;
 
@@ -210,7 +234,7 @@ function clickPane(index, viaHover = false) {
     }
   }
 
-  const solved = panes.every(other => other === pane || other.clicked);
+  const solved = panes.every(other => other === pane || other.clicked || other.empty);
   if (solved) finishing = true;
 
   const resolve = () => {
@@ -242,7 +266,7 @@ function finish() {
   const isBest = best === null || seconds < best;
   if (isBest) {
     best = seconds;
-    localStorage.setItem(BEST_KEY, String(seconds));
+    localStorage.setItem(bestKeyFor(paneCount()), String(seconds));
     elements.best.classList.add("fresh");
   }
   elements.best.textContent = formatTime(best);
@@ -270,7 +294,7 @@ function tick() {
 
 const CONTROLS = [
   "renderType", "termSize", "normalTermSize", "roundness", "gap", "showNumbers",
-  "blockIncorrect", "clientPrediction", "hoverMode", "dropKey", "resolveTimeout", "firstClickProt", "ping", "autoRestart",
+  "numberCount", "blockIncorrect", "clientPrediction", "hoverMode", "dropKey", "resolveTimeout", "firstClickProt", "ping", "autoRestart",
   "background", "order1", "order2", "order3"
 ];
 
@@ -287,6 +311,8 @@ function bindControls() {
       saveSettings();
       syncOutputs();
       applySettings();
+      // Changing how many numbers there are needs a fresh terminal to play on.
+      if (name === "numberCount") newTerminal();
     });
   }
 }
@@ -327,7 +353,7 @@ document.getElementById("reset-settings").addEventListener("click", () => {
 
 document.getElementById("reset-pb").addEventListener("click", () => {
   best = null;
-  localStorage.removeItem(BEST_KEY);
+  localStorage.removeItem(bestKeyFor(paneCount()));
   elements.best.textContent = formatTime(null);
   elements.best.classList.remove("fresh");
 });
@@ -386,7 +412,10 @@ document.addEventListener("keyup", event => {
 // Alt-tabbing with the key down would otherwise leave it stuck.
 if (typeof window !== "undefined") window.addEventListener("blur", () => { dropKeyHeld = false; });
 
-elements.best.textContent = formatTime(best);
+// Best times used to be stored without a count; keep that one as the fourteen number best.
+const legacyBest = localStorage.getItem(BEST_KEY);
+if (legacyBest && !localStorage.getItem(bestKeyFor(PANES))) localStorage.setItem(bestKeyFor(PANES), legacyBest);
+
 stopBinding();
 bindControls();
 syncControls();

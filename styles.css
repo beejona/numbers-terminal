@@ -114,6 +114,7 @@ kbd {
 /* An unclicked pane the solver isn't highlighting. */
 .slot.pane { background: rgba(255, 255, 255, 0.11); }
 .slot.done { background: transparent; color: transparent; cursor: default; }
+.slot.empty { background: transparent; cursor: default; }
 .slot.next-1 { background: var(--order1); color: #0d1a0d; }
 .slot.next-2 { background: var(--order2); color: #0d1a0d; }
 .slot.next-3 { background: var(--order3); color: #eaf7ea; }
@@ -141,6 +142,7 @@ kbd {
   box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.25);
 }
 .terminal.normal .slot.done .pane-item { background: #55dd55; }
+.terminal.normal .slot.empty .pane-item { background: transparent; box-shadow: none; }
 .terminal.normal .slot.done { color: #fff; }
 .terminal.normal .slot.next-1 .pane-item { outline: 3px solid var(--order1); outline-offset: -3px; }
 .terminal.normal .slot.next-2 .pane-item { outline: 3px solid var(--order2); outline-offset: -3px; }
