@@ -6,7 +6,10 @@ import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 
 const db = new DatabaseSync(process.env.DB_FILE || ":memory:");
-db.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8").replace(/CREATE (TABLE|INDEX) /g, "CREATE $1 IF NOT EXISTS "));
+for (const file of ["0001_init.sql", "0002_hardening.sql"]) {
+  db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8").replace(/CREATE (TABLE|INDEX) /g, "CREATE $1 IF NOT EXISTS "));
+}
+const unlimited = { async limit() { return { success: true }; } };
 const statement = (sql, params = []) => ({
   bind: (...values) => statement(sql, values),
   async first() { return db.prepare(sql).get(...params) ?? null; },
@@ -16,7 +19,8 @@ const statement = (sql, params = []) => ({
 const env = {
   DB: { prepare: sql => statement(sql), batch: list => Promise.all(list.map(s => s.run())) },
   ALLOWED_ORIGINS: "http://localhost:8000,http://127.0.0.1:8000",
-  ADMIN_TOKEN: process.env.ADMIN_TOKEN || "local-admin"
+  ADMIN_TOKEN: process.env.ADMIN_TOKEN || "local-admin",
+  READ_LIMIT: unlimited, POST_LIMIT: unlimited
 };
 
 createServer(async (req, res) => {

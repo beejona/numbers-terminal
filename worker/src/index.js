@@ -11,6 +11,10 @@ import { checkName } from "../../namefilter.js";
  * Times come from the player's browser, so they can't be proven - only checked for being possible.
  * Names are checked here (namefilter.js) whatever the page did, and a name belongs to the browser
  * key that first posted with it, so nobody can post as someone else.
+ *
+ * Abuse limits: every address gets READ_LIMIT / POST_LIMIT requests a minute (Cloudflare's rate
+ * limiter, so no addresses are kept here), at most NEW_NAMES_PER_DAY new names a day, and boards
+ * are served from a few seconds' cache so a crowd watching them barely touches the database.
  */
 
 const COUNTS = new Set([10, 14]);
@@ -20,8 +24,12 @@ const MIN_MS_PER_PANE = 25;
 const MAX_TIME_MS = 60_000;
 const MAX_PING = 400;
 const BOARD_SIZE = 100;
-const POSTS_PER_MINUTE = 30;
 const MAX_BODY = 1024;
+const NEW_NAMES_PER_DAY = 5;
+const BOARD_CACHE_MS = 10_000;
+
+// Boards recently read, per instance of the Worker: { "14|all": { at, body } }.
+const boardCache = new Map();
 
 export default {
   async fetch(request, env) {
@@ -29,6 +37,10 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
     try {
+      const limiter = request.method === "GET" ? env.READ_LIMIT : env.POST_LIMIT;
+      if (limiter && !(await limiter.limit({ key: clientKey(request) })).success) {
+        return json({ error: "Slow down a little." }, 429, cors);
+      }
       if (url.pathname === "/v1/scores" && request.method === "GET") return json(await board(url, env), 200, cors);
       if (url.pathname === "/v1/scores" && request.method === "POST") return await post(request, env, cors);
       if (url.pathname === "/v1/name" && request.method === "GET") return json(await nameStatus(url, env), 200, cors);
@@ -55,10 +67,38 @@ function corsHeaders(request, env) {
 }
 
 function json(body, status, headers) {
-  return new Response(JSON.stringify(body), {
+  return new Response(typeof body === "string" ? body : JSON.stringify(body), {
     status,
-    headers: { ...headers, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
+    headers: {
+      ...headers,
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff"
+    }
   });
+}
+
+/**
+ * Who's asking, for the limits: the address, or for IPv6 its /64 - one home or phone gets a
+ * whole /64, so limiting single IPv6 addresses would limit nothing.
+ */
+function clientKey(request) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  if (!ip.includes(":")) return ip;
+  const [head, tail = ""] = ip.toLowerCase().split("::");
+  const front = head ? head.split(":") : [];
+  const back = tail ? tail.split(":") : [];
+  const groups = [...front, ...Array(Math.max(0, 8 - front.length - back.length)).fill("0"), ...back];
+  return groups.slice(0, 4).map(g => g.padStart(4, "0")).join(":") + "::/64";
+}
+
+/** Compares two strings in time that doesn't depend on where they differ. */
+async function sameSecret(a, b) {
+  const [x, y] = await Promise.all([a, b].map(s => crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))));
+  const left = new Uint8Array(x), right = new Uint8Array(y);
+  let difference = 0;
+  for (let i = 0; i < left.length; i++) difference |= left[i] ^ right[i];
+  return difference === 0;
 }
 
 async function sha256(text) {
@@ -70,6 +110,16 @@ async function board(url, env) {
   const count = Number(url.searchParams.get("count") || 14);
   const mode = url.searchParams.get("mode") || "all";
   if (!COUNTS.has(count)) return { error: "Unknown terminal size." };
+  if (mode !== "all" && !MODES.has(mode)) return { error: "Unknown mode." };
+  const cacheKey = `${count}|${mode}`;
+  const cached = boardCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < BOARD_CACHE_MS) return cached.body;
+  const body = await readBoard(count, mode, env);
+  boardCache.set(cacheKey, { at: Date.now(), body });
+  return body;
+}
+
+async function readBoard(count, mode, env) {
   let rows;
   if (mode === "all") {
     // Each name's single best across modes. SQLite fills the other columns from the MIN() row.
@@ -77,13 +127,11 @@ async function board(url, env) {
       `SELECT name, MIN(time_ms) AS time_ms, mode, ping, updated_at FROM scores
        WHERE count = ?1 GROUP BY name_key ORDER BY time_ms ASC, updated_at ASC LIMIT ?2`
     ).bind(count, BOARD_SIZE).all());
-  } else if (MODES.has(mode)) {
+  } else {
     ({ results: rows } = await env.DB.prepare(
       `SELECT name, time_ms, mode, ping, updated_at FROM scores
        WHERE count = ?1 AND mode = ?2 ORDER BY time_ms ASC, updated_at ASC LIMIT ?3`
     ).bind(count, mode, BOARD_SIZE).all());
-  } else {
-    return { error: "Unknown mode." };
   }
   return { count, mode, scores: rows.map((row, index) => ({ rank: index + 1, ...row })) };
 }
@@ -102,20 +150,24 @@ async function nameStatus(url, env) {
   return { status: row.owner === owner ? "yours" : "taken" };
 }
 
-/** Counts this address's posts in the current minute; false once it's over the limit. */
-async function withinRateLimit(request, env) {
-  const ip = request.headers.get("CF-Connecting-IP") || "local";
-  const minute = Math.floor(Date.now() / 60_000);
+/**
+ * Counts a new name against this address's allowance for the day; false once it's used up. The
+ * address is only kept hashed with a secret, and old days are dropped.
+ */
+async function mayClaimName(request, env) {
+  const day = Math.floor(Date.now() / 86_400_000);
+  const who = await sha256(`${env.ADMIN_TOKEN || ""}|${clientKey(request)}`);
   const row = await env.DB.prepare(
-    `INSERT INTO hits (ip, minute, n) VALUES (?1, ?2, 1)
-     ON CONFLICT (ip, minute) DO UPDATE SET n = n + 1 RETURNING n`
-  ).bind(ip, minute).first();
-  // Now and then, forget old minutes.
-  if (Math.random() < 0.02) await env.DB.prepare("DELETE FROM hits WHERE minute < ?1").bind(minute - 5).run();
-  return row.n <= POSTS_PER_MINUTE;
+    `INSERT INTO name_claims (who, day, n) VALUES (?1, ?2, 1)
+     ON CONFLICT (who, day) DO UPDATE SET n = n + 1 RETURNING n`
+  ).bind(who, day).first();
+  if (Math.random() < 0.05) await env.DB.prepare("DELETE FROM name_claims WHERE day < ?1").bind(day - 1).run();
+  return row.n <= NEW_NAMES_PER_DAY;
 }
 
 async function readBody(request) {
+  // Turn big bodies away before reading them.
+  if (Number(request.headers.get("Content-Length") || 0) > MAX_BODY) return null;
   const text = await request.text();
   if (text.length > MAX_BODY) return null;
   try {
@@ -138,7 +190,6 @@ async function post(request, env, cors) {
   if (!Number.isInteger(time) || time < count * MIN_MS_PER_PANE || time > MAX_TIME_MS) {
     return json({ error: "That time isn't possible." }, 400, cors);
   }
-  if (!(await withinRateLimit(request, env))) return json({ error: "Slow down a little." }, 429, cors);
 
   const nameKey = name.toLowerCase();
   if (await env.DB.prepare("SELECT 1 FROM blocked_names WHERE name_key = ?1").bind(nameKey).first()) {
@@ -150,6 +201,7 @@ async function post(request, env, cors) {
   if (holder && holder.owner !== owner) return json({ error: "That name is already taken." }, 409, cors);
   const shownName = holder ? holder.name : name;
   if (!holder) {
+    if (!(await mayClaimName(request, env))) return json({ error: "Too many new names today. Try again tomorrow." }, 429, cors);
     await env.DB.prepare("INSERT INTO names (name_key, name, owner, created_at) VALUES (?1, ?2, ?3, ?4)")
       .bind(nameKey, name, owner, now).run();
   }
@@ -161,6 +213,7 @@ async function post(request, env, cors) {
        name = excluded.name, updated_at = excluded.updated_at
      WHERE excluded.time_ms < scores.time_ms`
   ).bind(count, mode, nameKey, shownName, time, ping, now).run();
+  boardCache.clear();
 
   const best = await env.DB.prepare("SELECT time_ms FROM scores WHERE count = ?1 AND mode = ?2 AND name_key = ?3")
     .bind(count, mode, nameKey).first();
@@ -171,7 +224,7 @@ async function post(request, env, cors) {
 
 async function remove(request, env, cors) {
   const auth = request.headers.get("Authorization") || "";
-  if (!env.ADMIN_TOKEN || auth !== `Bearer ${env.ADMIN_TOKEN}`) return json({ error: "Not allowed." }, 401, cors);
+  if (!env.ADMIN_TOKEN || !(await sameSecret(auth, `Bearer ${env.ADMIN_TOKEN}`))) return json({ error: "Not allowed." }, 401, cors);
   const body = await readBody(request);
   if (!body || typeof body.name !== "string") return json({ error: "Bad request." }, 400, cors);
   const nameKey = body.name.toLowerCase();
@@ -180,5 +233,6 @@ async function remove(request, env, cors) {
     env.DB.prepare("DELETE FROM names WHERE name_key = ?1").bind(nameKey),
     ...(body.block ? [env.DB.prepare("INSERT OR IGNORE INTO blocked_names (name_key, blocked_at) VALUES (?1, ?2)").bind(nameKey, Date.now())] : [])
   ]);
+  boardCache.clear();
   return json({ ok: true, scoresRemoved: removed[0].meta.changes, blocked: Boolean(body.block) }, 200, cors);
 }

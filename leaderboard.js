@@ -1,4 +1,4 @@
-import { checkName } from "./namefilter.js?v=7";
+import { checkName } from "./namefilter.js?v=8";
 
 /**
  * The live leaderboard panel. Pick a name once; from then on every run that beats your best for
@@ -8,8 +8,19 @@ import { checkName } from "./namefilter.js?v=7";
  * only accepts posts for a name from the key that first used it.
  */
 
-const API = (new URLSearchParams(location.search).get("api") ||
-  document.querySelector('meta[name="leaderboard-api"]')?.content || "").replace(/\/$/, "");
+// The server is fixed in the page. A ?api= address only works for a copy running on this machine
+// pointed at a local test server: taken from a link, it could send your name key to someone else.
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
+function localTestServer() {
+  const wanted = new URLSearchParams(location.search).get("api");
+  if (!wanted || !LOCAL_HOSTS.has(location.hostname)) return null;
+  try {
+    return LOCAL_HOSTS.has(new URL(wanted).hostname) ? wanted : null;
+  } catch {
+    return null;
+  }
+}
+const API = (localTestServer() || document.querySelector('meta[name="leaderboard-api"]')?.content || "").replace(/\/$/, "");
 const REFRESH_MS = 15_000;
 const NAME_KEY = "numbers-terminal.leaderboard.name";
 const SECRET_KEY = "numbers-terminal.leaderboard.key";
@@ -131,7 +142,8 @@ async function postPending() {
 
 window.addEventListener("terminal:finish", async event => {
   const { seconds, count, mode, ping } = event.detail;
-  const time = Math.round(seconds * 1000);
+  // Rounded the way the page shows it (toFixed), so the board and the Best box always agree.
+  const time = Math.round(Number(seconds.toFixed(3)) * 1000);
   const all = bests();
   all[count] ??= {};
   const previous = all[count][mode];
@@ -145,7 +157,7 @@ window.addEventListener("terminal:finish", async event => {
     const result = await postRun(count, mode, run);
     setStatus(`${MODE_LABELS[mode]} best posted: #${result.rank} on the ${count} number ${MODE_LABELS[mode].toLowerCase()} board.`, "good");
     const message = document.getElementById("message");
-    if (!message.hidden) message.insertAdjacentHTML("beforeend", `<small>#${result.rank} on the leaderboard</small>`);
+    if (!message.hidden) message.append(element("small", `#${Number(result.rank)} on the leaderboard`));
     if (!panel.hidden) load();
   } catch (error) {
     // Refused outright: forget it. Anything else (offline, say) stays pending and goes up later.
@@ -165,29 +177,50 @@ function formatTime(ms) {
   return `${(ms / 1000).toFixed(3)}s`;
 }
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** A new element with plain text in it: nothing from the server is ever read as HTML. */
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = String(text);
+  if (className) node.className = className;
+  return node;
+}
+
+function showNote(text) {
+  list.replaceChildren(element("p", text, "lb-empty"));
 }
 
 async function load() {
   if (!API) {
-    list.innerHTML = `<p class="lb-empty">The leaderboard isn't connected yet.</p>`;
+    showNote("The leaderboard isn't connected yet.");
     return;
   }
   try {
     const board = await api(`/v1/scores?count=${view.count}&mode=${view.mode}`);
-    const me = (read(NAME_KEY, "") || "").toLowerCase();
-    list.innerHTML = board.scores.length === 0
-      ? `<p class="lb-empty">No times yet${view.mode === "all" ? "" : ` for ${MODE_LABELS[view.mode].toLowerCase()}`}. Be the first.</p>`
-      : `<table><thead><tr><th>#</th><th>Name</th><th>Time</th><th>Mode</th><th>Ping</th></tr></thead><tbody>${
-        board.scores.map(s => `<tr${s.name.toLowerCase() === me ? ' class="me"' : ""}>` +
-          `<td>${s.rank}</td><td>${escapeHtml(s.name)}</td><td>${formatTime(s.time_ms)}</td>` +
-          `<td><span class="lb-mode ${escapeHtml(s.mode)}">${MODE_LABELS[s.mode] || escapeHtml(s.mode)}</span></td><td>${s.ping}ms</td></tr>`).join("")
-      }</tbody></table>`;
+    const scores = Array.isArray(board.scores) ? board.scores : [];
+    if (scores.length === 0) {
+      showNote(`No times yet${view.mode === "all" ? "" : ` for ${MODE_LABELS[view.mode].toLowerCase()}`}. Be the first.`);
+    } else {
+      const me = String(read(NAME_KEY, "") || "").toLowerCase();
+      const table = element("table");
+      const head = table.createTHead().insertRow();
+      for (const title of ["#", "Name", "Time", "Mode", "Ping"]) head.append(element("th", title));
+      const body = table.createTBody();
+      for (const score of scores) {
+        const name = String(score.name);
+        const mode = MODE_LABELS[score.mode] ? score.mode : "click";
+        const row = body.insertRow();
+        if (name.toLowerCase() === me) row.className = "me";
+        const tag = element("span", MODE_LABELS[mode], `lb-mode ${mode}`);
+        row.append(element("td", Number(score.rank)), element("td", name), element("td", formatTime(Number(score.time_ms))),
+          element("td"), element("td", `${Number(score.ping)}ms`));
+        row.cells[3].append(tag);
+      }
+      list.replaceChildren(table);
+    }
     lastLoaded = Date.now();
     showUpdated();
   } catch (error) {
-    list.innerHTML = `<p class="lb-empty">${escapeHtml(error.message)}</p>`;
+    showNote(error.message);
   }
 }
 
@@ -211,8 +244,11 @@ function open(show) {
   view.count = currentCount();
   selectTab("count", view.count);
   load();
-  refreshTimer = setInterval(() => { load(); }, REFRESH_MS);
+  refreshTimer = setInterval(() => { if (document.visibilityState === "visible") load(); }, REFRESH_MS);
 }
+
+// Back to a tab that stopped refreshing while hidden: catch up at once.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !panel.hidden) load(); });
 
 window.addEventListener("panel:open", event => { if (event.detail !== "leaderboard") open(false); });
 setInterval(showUpdated, 1000);

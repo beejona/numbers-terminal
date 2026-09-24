@@ -18,9 +18,19 @@ function d1(db) {
   };
 }
 
+/** Cloudflare's rate limiter: so many calls per key per minute. */
+function limiter(limit) {
+  const counts = new Map();
+  return { async limit({ key }) { const n = (counts.get(key) || 0) + 1; counts.set(key, n); return { success: n <= limit }; } };
+}
+
 const db = new DatabaseSync(":memory:");
-db.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
-const env = { DB: d1(db), ALLOWED_ORIGINS: "https://beejona.github.io", ADMIN_TOKEN: "admin-test-token" };
+for (const file of ["0001_init.sql", "0002_hardening.sql"]) db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
+const env = {
+  DB: d1(db), ALLOWED_ORIGINS: "https://beejona.github.io", ADMIN_TOKEN: "admin-test-token",
+  READ_LIMIT: limiter(120), POST_LIMIT: limiter(10)
+};
+let nextIp = 1;
 
 let failures = 0;
 function check(condition, message) {
@@ -29,7 +39,8 @@ function check(condition, message) {
 }
 async function call(method, path, body, headers = {}) {
   const request = new Request(`https://leaderboard.test${path}`, {
-    method, headers: { "Content-Type": "application/json", Origin: "https://beejona.github.io", "CF-Connecting-IP": headers.ip || "1.1.1.1", ...headers },
+    // Each call from its own address unless a test says otherwise, so the limits only bite where tested.
+    method, headers: { "Content-Type": "application/json", Origin: "https://beejona.github.io", "CF-Connecting-IP": headers.ip || `10.0.${nextIp >> 8}.${nextIp++ & 255}`, ...headers },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   const response = await worker.fetch(request, env);
@@ -87,12 +98,42 @@ check(r.status === 200 && r.body.scoresRemoved === 1, "the admin can take a name
 r = await call("POST", "/v1/scores", run({ name: "Dropper", key: "c".repeat(64) }));
 check(r.status === 400, "and a blocked name can't come back");
 
-let limited = false;
+let posts = 0;
 for (let i = 0; i < 40; i++) {
   r = await call("POST", "/v1/scores", run({ name: "Spammer", key: "e".repeat(64), time_ms: 5000 + i }), { ip: "9.9.9.9" });
-  if (r.status === 429) { limited = true; break; }
+  if (r.status === 429) break;
+  posts++;
 }
-check(limited, "posting is rate limited per address");
+check(posts === 10, `posting is rate limited per address (${posts} posts a minute got through)`);
+posts = 0;
+for (let i = 0; i < 20; i++) {
+  // Different addresses in one IPv6 /64 (one home or phone) share a limit.
+  r = await call("POST", "/v1/scores", run({ name: "V6user", key: "f".repeat(64), time_ms: 6000 + i }), { ip: `2001:db8:abcd:12::${i + 1}` });
+  if (r.status === 429) break;
+  posts++;
+}
+check(posts === 10, `IPv6 addresses are limited per /64 (${posts} got through)`);
+
+let names = 0;
+for (let i = 0; i < 8; i++) {
+  r = await call("POST", "/v1/scores", run({ name: `Squatter${i}`, key: "9".repeat(64) }), { ip: "8.8.4.4" });
+  if (r.status !== 200) break;
+  names++;
+}
+check(names === 5 && r.status === 429 && /Too many new names/.test(r.body.error), `one address can only make 5 new names a day (${names})`);
+check(db.prepare("SELECT who FROM name_claims").all().every(row => !row.who.includes("8.8.4.4")), "addresses aren't stored as they are");
+
+r = await worker.fetch(new Request("https://leaderboard.test/v1/scores", {
+  method: "POST", headers: { "Content-Type": "application/json", "Content-Length": "999999", "CF-Connecting-IP": "7.7.7.7" }, body: "x"
+}), env);
+check(r.status === 400, "a body claiming to be huge is turned away before it's read");
+r = await call("GET", "/v1/scores?count=14&mode=all");
+check(r.headers.get("X-Content-Type-Options") === "nosniff", "responses can't be sniffed as another type");
+r = await call("GET", "/v1/scores?count=14&mode=hover");
+const hoverBefore = r.body.scores[0].time_ms;
+await call("POST", "/v1/scores", run({ name: "Hoverer", key: keyB, mode: "hover", time_ms: hoverBefore - 100 }));
+r = await call("GET", "/v1/scores?count=14&mode=hover");
+check(r.body.scores[0].time_ms === hoverBefore - 100, "a new best shows at once despite the board cache");
 
 console.log(failures ? `${failures} FAILED` : "all passed");
 process.exit(failures ? 1 : 0);

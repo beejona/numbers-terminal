@@ -11,7 +11,19 @@ database_id = "65b008b0-bbca-43f5-91bf-ea44cdb9a8bf"
 migrations_dir = "migrations"
 
 [vars]
-# Pages allowed to call the leaderboard (the site, and a local copy for testing).
-ALLOWED_ORIGINS = "https://beejona.github.io,http://localhost:8000,http://127.0.0.1:8000"
+# Pages allowed to call the leaderboard from a browser. (Local testing runs its own server.)
+ALLOWED_ORIGINS = "https://beejona.github.io"
+
+# Per-address limits, kept by Cloudflare (period is 10 or 60 seconds). The page reads the board
+# every 15 s while it's open, plus a name check while typing.
+[[ratelimits]]
+name = "READ_LIMIT"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "POST_LIMIT"
+namespace_id = "1002"
+simple = { limit = 10, period = 60 }
 
 # ADMIN_TOKEN (for taking names off the board) is a secret: npx wrangler secret put ADMIN_TOKEN
