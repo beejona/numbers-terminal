@@ -278,7 +278,17 @@ function finish() {
     `<small>${settings.autoRestart ? "Next terminal opening..." : "Press R for another"}</small>`;
   elements.message.hidden = false;
 
+  // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
+  window.dispatchEvent(new CustomEvent("terminal:finish", {
+    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping }
+  }));
+
   if (settings.autoRestart) setTimeout(newTerminal, 800);
+}
+
+/** How the run was played: sweeping without a key, sweeping with the drop key, or clicking. */
+function runMode() {
+  return settings.hoverMode ? "hover" : settings.dropKey ? "drop" : "click";
 }
 
 function formatTime(seconds) {
@@ -341,7 +351,11 @@ function syncOutputs() {
 
 function toggleSettings(show) {
   elements.settings.hidden = show === undefined ? !elements.settings.hidden : !show;
+  // One side panel at a time.
+  if (!elements.settings.hidden) window.dispatchEvent(new CustomEvent("panel:open", { detail: "settings" }));
 }
+
+window.addEventListener("panel:open", event => { if (event.detail !== "settings") toggleSettings(false); });
 
 document.getElementById("restart").addEventListener("click", newTerminal);
 document.getElementById("toggle-settings").addEventListener("click", () => toggleSettings());
@@ -395,6 +409,8 @@ document.addEventListener("keydown", event => {
   }
 
   if (settings.dropKey && event.code === settings.dropKeyBind) {
+    // Claimed, so other shortcuts (leaderboard.js) leave it alone.
+    event.preventDefault();
     dropKeyHeld = true;
     // Pressing it while already over a pane counts too, not just moving onto one.
     if (hoveredIndex >= 0) clickPane(hoveredIndex, true);

@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Numbers Terminal Simulator</title>
 <meta name="description" content="Practice the Hypixel SkyBlock floor 7 numbers terminal (Click in order!) with an Odin-style solver.">
-<link rel="stylesheet" href="styles.css?v=6">
+<!-- The leaderboard server (worker/). Empty: the leaderboard shows as not connected. -->
+<meta name="leaderboard-api" content="">
+<link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -23,6 +25,7 @@
 
     <div class="actions">
       <button id="restart" type="button">New terminal <kbd>R</kbd></button>
+      <button id="toggle-leaderboard" type="button">Leaderboard <kbd>L</kbd></button>
       <button id="toggle-settings" type="button">Settings <kbd>S</kbd></button>
     </div>
   </header>
@@ -85,6 +88,39 @@
     </section>
   </aside>
 
-  <script src="app.js?v=6"></script>
+  <aside id="leaderboard" class="leaderboard" hidden>
+    <div class="settings-head">
+      <h2>Leaderboard</h2>
+      <button id="close-leaderboard" class="icon" type="button" aria-label="Close leaderboard">&times;</button>
+    </div>
+
+    <form id="lb-name-form" class="lb-name" autocomplete="off">
+      <label for="lb-name">Your name</label>
+      <div class="lb-name-row">
+        <input id="lb-name" maxlength="16" spellcheck="false" placeholder="Minecraft name">
+        <button id="lb-save" type="submit">Save</button>
+      </div>
+      <p id="lb-name-note" class="lb-note"></p>
+    </form>
+    <p id="lb-status" class="lb-status"></p>
+
+    <div class="lb-tabs" role="tablist" aria-label="Terminal size">
+      <button type="button" data-count="14">14 numbers</button>
+      <button type="button" data-count="10">10 numbers</button>
+    </div>
+    <div class="lb-chips" role="tablist" aria-label="Play mode">
+      <button type="button" data-mode="all">All</button>
+      <button type="button" data-mode="click">Click</button>
+      <button type="button" data-mode="drop">Drop key</button>
+      <button type="button" data-mode="hover">Hover</button>
+    </div>
+
+    <div id="lb-list" class="lb-list"></div>
+    <p id="lb-updated" class="lb-updated"></p>
+    <p class="lb-fine">Your best for each size and mode goes up when you beat it. Your name stays tied to this browser.</p>
+  </aside>
+
+  <script src="app.js?v=7"></script>
+  <script type="module" src="leaderboard.js?v=7"></script>
 </body>
 </html>

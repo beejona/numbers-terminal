@@ -40,7 +40,26 @@ comes back until the click is confirmed, which is what the mod's reload does.
 
 Settings persist in the browser, and **Reset to Odin defaults** puts them all back.
 
+## Leaderboard
+
+Press **L** (or the Leaderboard button) and pick a name. From then on, every run that beats your
+best for its terminal size (14 or 10) and play mode (Click, Drop key or Hover) goes up on the
+board by itself, and runs you did before picking a name go up when you save it. The board
+refreshes while it's open; **All** shows everyone's single best, with the mode it was played in and
+its ping.
+
+- Names are Minecraft-style (3 to 16 letters, numbers, underscores), and slurs are refused, also
+  when spelled with numbers, underscores or repeated letters (`namefilter.js`).
+- A name belongs to the browser that first used it, so nobody else can post under it.
+- Times come from the browser, so they can't be proven; the server only turns down impossible ones
+  (under 25 ms a pane). Names and times can be taken off by hand (see `worker/`).
+
+The server is a Cloudflare Worker with a D1 database, in `worker/`. `node worker/test/run.mjs`
+tests it, and `node worker/test/serve.mjs` runs it locally on port 8787 (open the page with
+`?api=http://127.0.0.1:8787`).
+
 ## Running it locally
 
-It's plain HTML, CSS and JavaScript with no build step and no dependencies. Open `index.html`, or
-serve the folder with `python3 -m http.server`.
+It's plain HTML, CSS and JavaScript with no build step and no dependencies. Serve the folder with
+`python3 -m http.server` (the leaderboard is a JavaScript module, which browsers won't load from a
+plain `index.html` file).

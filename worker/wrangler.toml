@@ -1,0 +1,17 @@
+# The leaderboard for https://beejona.github.io/numbers-terminal/ - a Cloudflare Worker with a D1
+# (SQLite) database. Deploy from this folder: npx wrangler deploy
+name = "numbers-terminal-leaderboard"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "numbers-terminal-leaderboard"
+database_id = "00000000-0000-0000-0000-000000000000" # replaced with the real id once it's created
+migrations_dir = "migrations"
+
+[vars]
+# Pages allowed to call the leaderboard (the site, and a local copy for testing).
+ALLOWED_ORIGINS = "https://beejona.github.io,http://localhost:8000,http://127.0.0.1:8000"
+
+# ADMIN_TOKEN (for taking names off the board) is a secret: npx wrangler secret put ADMIN_TOKEN
