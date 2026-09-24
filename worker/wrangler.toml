@@ -7,7 +7,7 @@ compatibility_date = "2026-09-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "numbers-terminal-leaderboard"
-database_id = "00000000-0000-0000-0000-000000000000" # replaced with the real id once it's created
+database_id = "65b008b0-bbca-43f5-91bf-ea44cdb9a8bf"
 migrations_dir = "migrations"
 
 [vars]
