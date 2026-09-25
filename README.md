@@ -55,7 +55,8 @@ its ping.
   the layout, when and where each pane was cleared, and the pointer's path - which the server checks
   against the time (`worker/src/checkrun.js`): the clicks have to be in order and on their panes,
   the time has to match them, a Click run has to be all real clicks with the pointer moved onto
-  each pane, no closer together than a hand can click, not machine-evenly spaced and not all dead
+  each pane before it's pressed (not in the same instant, most of the time), no pointer in two places
+  at once, no closer together than a hand can click, not machine-evenly spaced and not all dead
   centre. Click runs under half a second, and Drop key or Hover runs under 25 ms a pane, are turned
   down outright. Clicks made up by a script don't play the terminal at all. Names and times can be taken off by hand (see `worker/`).
 

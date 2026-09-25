@@ -19,6 +19,13 @@ const MIN_CLICK_GAP_MS = 30;
 const MIN_GAP_SPREAD_MS = 3;
 // A script aims for the exact middle; a hand lands anywhere on the pane.
 const CENTRE = 0.01;
+// Browsers report the pointer about once a frame; two reports this close together (ms) are the
+// same moment, and a pointer can't be this far apart (panes) at one moment.
+const SAME_MOMENT_MS = 1.5;
+const TELEPORT = 0.25;
+// Pointer arriving on a pane in the same instant as the press (ms): a flick can do it now and then,
+// a hand can't do it for most of a run.
+const INSTANT_MS = 1;
 
 const NO_RECORD = "This run has no record of its clicks. Refresh the page and play it again.";
 const BROKEN = "This run's record doesn't hold together.";
@@ -60,21 +67,38 @@ export function checkRun(run, { count, mode, ping, time }) {
     last = click.t;
   }
 
+  // A pointer can't be in two places at once. (Fingers can: runs with taps are let off.)
+  if (!clicks.some(click => click.type === "touch" || click.type === "pen")) {
+    for (let k = 1; k < path.length; k++) {
+      const [t0, x0, y0] = path[k - 1];
+      const [t1, x1, y1] = path[k];
+      if (t1 - t0 <= SAME_MOMENT_MS && Math.hypot(x1 - x0, y1 - y0) > TELEPORT) {
+        return "In this run the pointer was in two places at once.";
+      }
+    }
+  }
+
   // The time can't be shorter than the run it came from (a ping delays the last pane's clear).
   const end = clicks[count - 1].t + (ping > 0 ? ping : 0);
   if (time < end - 5 || time > end + 5000) return "This run's time doesn't match its clicks.";
 
   if (mode !== "click") return null;
 
-  // Each pane the pointer has to be moved onto before it's pressed. A finger (or a pen, which may
+  // Each pane the pointer has to be moved onto before it's pressed - and a hand gets there before
+  // it presses, not in the same instant, at least most of the time. A finger (or a pen, which may
   // not hover) lands without moving over first, so those taps are let off.
+  let instant = 0;
+  let pointed = 0;
   for (let k = 1; k < count; k++) {
     const click = clicks[k];
     if (click.type === "touch" || click.type === "pen") continue;
     const from = clicks[k - 1].t;
-    const moved = path.some(([t, x, y]) => t >= from && t <= click.t + 0.5 && onPane(x, y, click.i));
-    if (!moved) return "In this run a pane was clicked without the pointer moving onto it.";
+    const arrivals = path.filter(([t, x, y]) => t >= from && t <= click.t + 0.5 && onPane(x, y, click.i));
+    if (arrivals.length === 0) return "In this run a pane was clicked without the pointer moving onto it.";
+    pointed++;
+    if (arrivals[0][0] >= click.t - INSTANT_MS) instant++;
   }
+  if (pointed >= 4 && instant > pointed / 2) return "In this run the pointer reached each pane at the very instant it clicked.";
 
   const gaps = clicks.slice(1).map((click, k) => click.t - clicks[k].t);
   if (Math.min(...gaps) < MIN_CLICK_GAP_MS) return "Two clicks in this run were closer together than a hand can click.";

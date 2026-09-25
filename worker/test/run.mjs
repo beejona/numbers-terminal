@@ -185,6 +185,17 @@ await refused(recorded(14, "click", 2000, r => {
 }), /exact middle/);
 await refused({ ...recorded(14, "click", 2000), path: Array(7000).fill([1, 0.5, 0.5]) }, /hold together/);
 
+const forged = JSON.parse(readFileSync(new URL("./fixtures/forged-2026-09-24.json", import.meta.url), "utf8"));
+await refused(forged.run, /two places at once/, { count: 10, time_ms: forged.time_ms, ping: forged.ping });
+await refused(recorded(14, "click", 2000, r => {
+  // The same forgery with its path spread out in time: still arriving as it clicks.
+  r.path = r.clicks.flatMap((c, k) => k === 0 ? [[c.t, c.x, c.y]] : [[(r.clicks[k - 1].t + c.t) / 2, c.x - 0.8, c.y], [c.t, c.x, c.y]]);
+}), /very instant/);
+await refused(recorded(14, "click", 2000, r => {
+  r.path.push([r.path[5][0], r.path[5][1] + 2, r.path[5][2]]);
+  r.path.sort((a, b) => a[0] - b[0]);
+}), /two places at once/);
+
 r = await call("POST", "/v1/scores", run({ name: "TouchPlayer", key: "6".repeat(64), time_ms: 1800, run: humanRun({ count: 14, time: 1800, random, touch: true }) }));
 check(r.status === 200, "taps on a touch screen don't need the pointer moved over first");
 const drop = humanRun({ count: 10, mode: "drop", time: 700, random });
