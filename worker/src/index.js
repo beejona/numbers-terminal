@@ -19,9 +19,11 @@ import { checkName } from "../../namefilter.js";
 
 const COUNTS = new Set([10, 14]);
 const MODES = new Set(["click", "drop", "hover"]);
-// Nobody finishes a terminal faster than this, whatever the size or mode: the best real runs are
-// well over it. (It was 25 ms a pane - 0.35 s for 14 - and scripted runs sat just above that.)
-const MIN_TIME_MS = 500;
+// Clicking each pane by hand, nobody finishes under half a second, whatever the size: scripted
+// "click" runs sat just above the old 25 ms a pane. Sweeping (drop key, hover) is much faster, so
+// those modes only have to clear 25 ms a pane.
+const MIN_CLICK_TIME_MS = 500;
+const MIN_MS_PER_PANE = 25;
 const MAX_TIME_MS = 60_000;
 const MAX_PING = 400;
 const BOARD_SIZE = 100;
@@ -188,7 +190,8 @@ async function post(request, env, cors) {
   if (typeof key !== "string" || !/^[a-f0-9]{32,128}$/.test(key)) return json({ error: "Bad request." }, 400, cors);
   if (!COUNTS.has(count) || !MODES.has(mode)) return json({ error: "Bad request." }, 400, cors);
   if (!Number.isInteger(ping) || ping < 0 || ping > MAX_PING) return json({ error: "Bad request." }, 400, cors);
-  if (!Number.isInteger(time) || time < MIN_TIME_MS || time > MAX_TIME_MS) {
+  const minimum = mode === "click" ? MIN_CLICK_TIME_MS : count * MIN_MS_PER_PANE;
+  if (!Number.isInteger(time) || time < minimum || time > MAX_TIME_MS) {
     return json({ error: "That time isn't possible." }, 400, cors);
   }
 

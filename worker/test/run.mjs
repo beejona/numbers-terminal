@@ -81,9 +81,12 @@ check(r.body.scores.length === 1 && r.body.scores[0].name === "TenGuy", "the 10 
 r = await call("GET", "/v1/scores?count=14&mode=all", undefined, { Origin: "https://evil.example" });
 check(!r.headers.get("Access-Control-Allow-Origin"), "other sites don't get CORS access");
 
-for (const [count, time, ok] of [[10, 499, false], [10, 500, true], [14, 499, false], [14, 380, false]]) {
-  r = await call("POST", "/v1/scores", run({ name: `Edge${count}x${time}`, key: "7".repeat(64), count, time_ms: time }));
-  check(ok ? r.status === 200 : r.status === 400, `${time} ms for ${count} numbers is ${ok ? "accepted" : "refused"} (floor is 0.5 s)`);
+for (const [mode, count, time, ok] of [
+  ["click", 10, 499, false], ["click", 10, 500, true], ["click", 14, 499, false], ["click", 14, 380, false],
+  ["hover", 14, 380, true], ["drop", 14, 360, true], ["hover", 14, 349, false], ["hover", 10, 260, true], ["drop", 10, 249, false]
+]) {
+  r = await call("POST", "/v1/scores", run({ name: `Edge_${mode}${count}x${time}`, key: "7".repeat(64), mode, count, time_ms: time }));
+  check(ok ? r.status === 200 : r.status === 400, `${mode}: ${time} ms for ${count} numbers is ${ok ? "accepted" : "refused"}`);
 }
 
 const owner = (await import("node:crypto")).createHash("sha256").update(keyA).digest("hex");
@@ -136,9 +139,9 @@ r = await call("GET", "/v1/scores?count=14&mode=all");
 check(r.headers.get("X-Content-Type-Options") === "nosniff", "responses can't be sniffed as another type");
 r = await call("GET", "/v1/scores?count=14&mode=hover");
 const hoverBefore = r.body.scores[0].time_ms;
-await call("POST", "/v1/scores", run({ name: "Hoverer", key: keyB, mode: "hover", time_ms: hoverBefore - 100 }));
+await call("POST", "/v1/scores", run({ name: "Hoverer", key: keyB, mode: "hover", time_ms: hoverBefore - 10 }));
 r = await call("GET", "/v1/scores?count=14&mode=hover");
-check(r.body.scores[0].time_ms === hoverBefore - 100, "a new best shows at once despite the board cache");
+check(r.body.scores[0].time_ms === hoverBefore - 10, "a new best shows at once despite the board cache");
 
 console.log(failures ? `${failures} FAILED` : "all passed");
 process.exit(failures ? 1 : 0);
