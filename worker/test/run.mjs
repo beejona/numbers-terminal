@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import worker, { saveRun, playerProblem } from "../src/index.js";
-import { Session, TerminalGame, TICK_MS, MAX_MESSAGES_PER_SECOND } from "../src/session.js";
+import { Session, TerminalGame, TICK_MS, QUEUE_LIMIT, MAX_MESSAGES_PER_SECOND } from "../src/session.js";
 import { checkRun } from "../src/checkrun.js";
 import { humanRun, randomSource } from "./humanrun.mjs";
 
@@ -59,81 +59,113 @@ const save = (over = {}) => {
 
 // ---- playing a terminal ----------------------------------------------------------------------
 
+/** A tiny event loop on a clock the test controls: sessions' waits and players' clicks, in time order. */
+function simulation() {
+  let clock = 1_000_000;
+  let order = 0;
+  const timers = [];
+  const schedule = (at, fn) => timers.push({ at, fn, order: order++ });
+  async function run(limit = 200_000) {
+    while (limit-- > 0) {
+      // Real async work (hashing a key, say) finishes outside this clock: give it a moment.
+      for (let i = 0; i < 20 && !timers.length; i++) await new Promise(resolve => setTimeout(resolve, 2));
+      if (!timers.length) break;
+      timers.sort((a, b) => a.at - b.at || a.order - b.order);
+      const timer = timers.shift();
+      clock = Math.max(clock, timer.at);
+      timer.fn();
+      await new Promise(resolve => setImmediate(resolve)); // let whatever woke up run to its next wait
+    }
+  }
+  return { now: () => clock, wait: ms => new Promise(resolve => schedule(clock + ms, resolve)), schedule, run };
+}
+
 /**
- * Plays one terminal through a Session: a player (or bot) who, after each pane clears, takes
- * [think](k) ms to click the next one, with [latency] ms each way to the server. Returns the
- * server's messages.
+ * Plays one terminal through a Session: a player who clicks pane after pane every [think](k) ms
+ * without waiting on the server (pingless), [latency] ms each way, and goes back to a pane when the
+ * server rejects it. Returns what the player heard.
  */
 async function play({ count = 14, mode = "click", recordMode = mode, think = () => 150, latency = 20, player = null } = {}) {
-  let clock = 1_000_000;
-  const sent = [];
+  const sim = simulation();
+  const heard = [];
+  let terminal = null, fake = null, next = 0, done = null, rejected = 0, kicked = false;
   const session = new Session({
-    send: message => sent.push(message), close: () => {},
+    send: message => sim.schedule(sim.now() + latency, () => hear(message)), close: () => {},
     checkName: (name, key) => playerProblem(env, name, key),
     save: run => saveRun(env, { ...run, address: "30.0.0.1" }),
-    now: () => clock,
-    wait: async ms => { clock += ms; }
+    now: sim.now, wait: sim.wait
   });
-  const deliver = async message => { clock += latency; await session.onMessage(JSON.stringify(message)); };
-  await deliver({ type: "start", count, mode, ...(player || {}) });
-  const terminal = sent.find(m => m.type === "terminal");
-  if (!terminal) { session.end(); return { sent }; }
-  clock += latency; // the terminal reaching the page
-  await deliver({ type: "ready" });
-  // What the page records while it plays, for the terminal the server dealt.
-  const fake = humanRun({ count, mode: recordMode, time: 5000, random, layout: terminal.layout });
-  const clicks = fake.clicks;
-  let window = terminal.window;
-  for (let k = 0; k < count; k++) {
-    clock += think(k);
-    const click = clicks[k];
-    const before = sent.length;
-    await deliver({ type: "click", window, i: click.i, t: click.t, x: click.x, y: click.y, via: click.via, pointer: click.type,
-      path: k === 0 ? fake.path.filter(p => p[0] <= click.t) : fake.path.filter(p => p[0] > clicks[k - 1].t && p[0] <= click.t), fill: fake.fill });
-    const reply = sent.slice(before).find(m => m.type === "cleared" || m.type === "done");
-    if (!reply) break;
-    clock += latency; // the new window reaching the page
-    window = reply.window;
+  const toServer = message => sim.schedule(sim.now() + latency, () => { session.onMessage(JSON.stringify(message)); });
+  const sentPath = new Set();
+  function clickAt(k, delay) {
+    sim.schedule(sim.now() + delay, () => {
+      if (next !== k || done || kicked) return;
+      const c = fake.clicks[k];
+      // The path goes once; a pane clicked again after a rejection has it on record already.
+      const path = sentPath.has(k) ? [] : fake.path.filter(p => p[0] > (k ? fake.clicks[k - 1].t : -1) && p[0] <= c.t);
+      sentPath.add(k);
+      toServer({ type: "click", i: c.i, t: c.t, x: c.x, y: c.y, via: c.via, pointer: c.type, path, fill: fake.fill });
+      next = k + 1;
+      if (next < count) clickAt(next, think(next));
+    });
   }
+  function hear(message) {
+    heard.push(message);
+    if (message.type === "terminal") {
+      terminal = message;
+      toServer({ type: "ready" });
+      fake = humanRun({ count, mode: recordMode, time: 5000, random, layout: message.layout });
+      clickAt(0, think(0));
+    } else if (message.type === "rejected") {
+      rejected++;
+      const k = terminal.layout[message.i] - 1;
+      if (k < next) { next = k; clickAt(k, think(k)); }
+    } else if (message.type === "done") done = message;
+    else if (message.type === "kicked") kicked = true;
+  }
+  toServer({ type: "start", count, mode, ...(player || {}) });
+  await sim.run();
   session.end();
-  return { sent, done: sent.find(m => m.type === "done") };
+  if (process.env.DEBUG_PLAY) console.log("heard:", heard.map(m => `${m.type}${m.i !== undefined ? ":" + m.i : ""}${m.error ? " " + m.error : ""}`).join(" "));
+  return { heard, done, rejected, kicked };
 }
 
 // A human-like run: ~150 ms a pane, 20 ms each way.
-let { done } = await play({ player: { name: "Beejona", key: keyA } });
+let thinking = 0;
+let { done, rejected } = await play({ player: { name: "Beejona", key: keyA }, think: k => { const t = 120 + ((k * 37) % 60); thinking += t; return t; } });
 check(done && done.ok && done.rank === 1, `a ranked run is timed by the server and saved (${done?.time_ms} ms, #${done?.rank})`);
 check(done.time_ms % TICK_MS === 0, "the time is a whole number of server ticks");
-check(done.time_ms >= 14 * 150, "and includes the player's clicking and their ping");
+check(rejected === 0, "a person clicking at their own pace never has a click rejected");
+check(done.time_ms >= thinking && done.time_ms <= thinking + 2 * 20 + TICK_MS,
+  `pingless: the ping adds once, not per pane (${done.time_ms} ms for ${thinking} ms of clicking at 40 ms round trip)`);
 let row = db.prepare("SELECT time_ms, ping FROM ranked_scores WHERE name_key = 'beejona'").get();
 check(row.time_ms === done.time_ms && row.ping === 40, `the board has the server's time and the measured ping (${row.ping} ms)`);
 
-// A bot that clicks the instant each pane clears, at 0 ping: one pane a tick at best.
-({ done } = await play({ player: { name: "SpeedBot", key: "c".repeat(64) }, think: () => 0, latency: 0 }));
+// Bots. One that clicks each pane the moment it can, at 0 ping: one pane a tick at best.
+({ done } = await play({ player: { name: "SpeedBot", key: "c".repeat(64) }, think: () => TICK_MS, latency: 0 }));
 check(done && done.time_ms === 14 * TICK_MS, `a zero-ping bot can't beat one pane a tick (${done?.time_ms} ms for 14)`);
-({ done } = await play({ count: 10, think: () => 0, latency: 0 }));
+({ done } = await play({ count: 10, think: () => TICK_MS, latency: 0 }));
 check(done && done.time_ms === 10 * TICK_MS, `...or ${10 * TICK_MS} ms for 10 (${done?.time_ms})`);
-({ done } = await play({ think: () => 0, latency: 30 }));
-check(done && done.time_ms >= 14 * 60, `with ping, every pane waits for its round trip (${done?.time_ms} ms)`);
+// One that fires every click at once: a few queue, the rest bounce, and it can't go faster anyway.
+let kicked;
+({ done, rejected, kicked } = await play({ think: () => 10, latency: 0 }));
+check((done && done.time_ms >= 14 * TICK_MS) || kicked, `a bot firing clicks as fast as it can is throttled (${done ? done.time_ms + " ms" : "kicked"}, ${rejected} rejected)`);
+({ done, kicked } = await play({ think: () => 1, latency: 0 }));
+check(kicked && !done, "one hammering the server gets kicked, like \"You are clicking too fast\"");
 
-// Throwing away stale clicks, wrong panes, floods.
+// The queue and rejections, directly.
 {
-  let clock = 0;
-  const game = new TerminalGame({ count: 10, mode: "click", now: clock, layout: [3, 1, 2, 4, 5, 6, 7, 8, 9, 10] });
-  const w0 = game.window;
-  check(game.click({ window: "nope", i: 1 }, 10) === null, "a click with the wrong window id is thrown away");
-  check(game.click({ window: w0, i: 0 }, 10)?.wrong === true, "a wrong pane doesn't clear");
-  const first = game.click({ window: w0, i: 1, t: 1 }, 10);
-  check(first && first.tick === 50 && first.window !== w0, "a right pane clears on the next tick with a new window id");
-  check(game.click({ window: w0, i: 2 }, 12) === null, "clicking ahead with the old window id is thrown away (no zero-ping)");
-  const second = game.click({ window: first.window, i: 2, t: 2 }, 51);
-  check(second && second.tick === 100, "never two panes in one tick");
-}
-{
-  const sent = [];
-  let clock = 5_000_000;
-  const session = new Session({ send: m => sent.push(m), close: () => {}, checkName: async () => null, save: async () => ({}), now: () => clock, wait: async () => {} });
-  for (let i = 0; i <= MAX_MESSAGES_PER_SECOND; i++) await session.onMessage(JSON.stringify({ type: "click", window: "x", i: 0 }));
-  check(sent.some(m => m.type === "kicked"), "flooding the server gets you kicked, like \"You are clicking too fast\"");
+  const layout = [3, 1, 2, 4, 5, 6, 7, 8, 9, 10];
+  const game = new TerminalGame({ count: 10, mode: "click", now: 0, layout });
+  const at = n => layout.indexOf(n);
+  check(game.click({ i: at(2), t: 1 }, 1)?.rejected === true, "a wrong pane is rejected");
+  const accepted = [1, 2, 3, 4, 5].map(n => game.click({ i: at(n), t: n }, 2));
+  check(accepted.every(r => r && !r.rejected) && accepted.map(r => r.tick).join() === "50,100,150,200,250",
+    `${QUEUE_LIMIT} rapid clicks queue up, one tick apart`);
+  check(game.click({ i: at(6), t: 6 }, 3)?.rejected === true, "the next rapid click is rejected: too many queued");
+  check(game.click({ i: at(7), t: 7 }, 3)?.rejected === true, "and so is one after it, until the missed pane is clicked again");
+  const again = game.click({ i: at(6), t: 8 }, 60);
+  check(again && !again.rejected && again.tick === 300, "once a tick has cleared one, it's accepted (and still one pane a tick)");
 }
 
 // The page's record still has to check out: hovered panes aren't a click run.
@@ -141,12 +173,13 @@ check(done && done.time_ms >= 14 * 60, `with ping, every pane waits for its roun
 check(done && /hovered/.test(done.error || "") && !db.prepare("SELECT 1 FROM ranked_scores WHERE name_key = 'hoverer'").get(), `a run whose record fails isn't saved: "${done?.error}"`);
 ({ done } = await play({ mode: "hover", player: { name: "Hoverer", key: "d".repeat(64) }, think: () => 60 }));
 check(done && done.ok, "the same run as a hover run is fine");
-({ sent: [done] } = await play({ player: { name: "beejona", key: keyB } }));
-check(done.type === "error" && /taken/.test(done.error), "someone else can't play as a taken name (any capitals)");
-({ sent: [done] } = await play({ player: { name: "N1GG4_boy", key: keyB } }));
-check(done.type === "error" && /allowed/.test(done.error), "a slur name can't play");
-({ sent: [done] } = await play({ count: 12 }));
-check(done.type === "error", "an unknown terminal size is refused");
+let heard;
+({ heard } = await play({ player: { name: "beejona", key: keyB } }));
+check(heard[0].type === "error" && /taken/.test(heard[0].error), "someone else can't play as a taken name (any capitals)");
+({ heard } = await play({ player: { name: "N1GG4_boy", key: keyB } }));
+check(heard[0].type === "error" && /allowed/.test(heard[0].error), "a slur name can't play");
+({ heard } = await play({ count: 12 }));
+check(heard[0].type === "error", "an unknown terminal size is refused");
 
 // ---- saving and boards -----------------------------------------------------------------------
 

@@ -7,7 +7,7 @@
 <meta name="description" content="Practice the Hypixel SkyBlock floor 7 numbers terminal (Click in order!) with an Odin-style solver.">
 <!-- The leaderboard server (worker/). Empty: the leaderboard shows as not connected. -->
 <meta name="leaderboard-api" content="https://numbers-terminal-leaderboard.numbers-terminal-leaderboard.workers.dev">
-<link rel="stylesheet" href="styles.css?v=10">
+<link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
   <header class="topbar">
@@ -116,14 +116,12 @@
       <button type="button" data-mode="hover">Hover</button>
     </div>
 
-    <p id="lb-old-note" class="lb-old-note" hidden>Old times: reported by browsers before terminals ran on the server, so they weren't checked the same way.</p>
     <div id="lb-list" class="lb-list"></div>
     <p id="lb-updated" class="lb-updated"></p>
-    <button type="button" id="lb-old" class="ghost lb-old">Old times</button>
-    <p class="lb-fine">Ranked terminals are played through the server like SkyBlock's: it deals them, every click goes to it, and it times the run, so your ping counts and the Ping setting only applies to practice. Your best for each size and mode goes up when you beat it. Your name stays tied to this browser.</p>
+    <p class="lb-fine">Ranked terminals are played through the server like SkyBlock's pingless ones: clicks count at once, but the server clears at most one pane a tick and throws back clicks made too fast, and it times the run (your ping adds once; the Ping setting only applies to practice). Your best for each size and mode goes up when you beat it. Your name stays tied to this browser.</p>
   </aside>
 
-  <script src="app.js?v=11"></script>
-  <script type="module" src="leaderboard.js?v=11"></script>
+  <script src="app.js?v=12"></script>
+  <script type="module" src="leaderboard.js?v=12"></script>
 </body>
 </html>

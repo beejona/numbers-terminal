@@ -46,11 +46,12 @@ Press **L** (or the Leaderboard button) and pick a name. From then on your termi
 **ranked**: they're played through the leaderboard server the way SkyBlock's terminals are played
 through Hypixel's.
 
-- The server deals the terminal. Every click goes to it with the menu's current window id; it
-  clears the pane on its next tick (20 a second, at most one pane a tick) and only then sends back
-  a new window id, which can't be guessed, so there's no clicking ahead ("zero ping"). A click
-  with an old id is thrown away, and flooding the server gets you kicked.
-- The server times the run with its own clock. So your real ping counts, as in game, and the
+- The server deals the terminal. Like SkyBlock's pingless terminals, clicks count the moment
+  they're made - the pane clears and the next can be clicked straight away - and go to the server,
+  which clears at most one pane a tick (20 a second) and lets only 5 rapid clicks queue up for that.
+  A click past that is rejected, and it and any pane clicked after it come back to be clicked
+  again. Flooding the server gets you kicked.
+- The server times the run with its own clock, so your real ping adds once (not per pane) and the
   Ping setting only applies to practice. The fastest anything can clear a terminal is one pane a
   tick: 0.7 s for 14, 0.5 s for 10, plus ping.
 - The page also sends a record of each run (when and where each pane was cleared, and the
@@ -58,7 +59,7 @@ through Hypixel's.
   run has to be all real clicks.
 - Without a name, or with **Ranked runs** switched off, terminals are practice and aren't saved.
 - Your best for each terminal size (14 or 10) and play mode (Click, Drop key or Hover) is kept.
-  **Old times** shows the times from before terminals ran on the server.
+  Times from before terminals ran on the server were carried over (cheated ones removed).
 - Names are Minecraft-style (3 to 16 letters, numbers, underscores), and slurs are refused, also
   when spelled with numbers, underscores or repeated letters (`namefilter.js`). A name belongs to
   the browser that first used it.

@@ -1,4 +1,4 @@
-import { checkName } from "./namefilter.js?v=11";
+import { checkName } from "./namefilter.js?v=12";
 
 /**
  * The live leaderboard panel. Pick a name once; from then on your terminals are ranked: app.js
@@ -37,10 +37,8 @@ const nameInput = document.getElementById("lb-name");
 const nameNote = document.getElementById("lb-name-note");
 const saveButton = document.getElementById("lb-save");
 const rankedBox = document.getElementById("lb-ranked");
-const oldButton = document.getElementById("lb-old");
-const oldNote = document.getElementById("lb-old-note");
 
-let view = { count: currentCount(), mode: "all", old: false };
+let view = { count: currentCount(), mode: "all" };
 let refreshTimer = 0;
 let lastLoaded = 0;
 let checkTimer = 0;
@@ -138,7 +136,7 @@ async function load() {
     return;
   }
   try {
-    const board = await api(`/v1/scores?count=${view.count}&mode=${view.mode}${view.old ? "&old=1" : ""}`);
+    const board = await api(`/v1/scores?count=${view.count}&mode=${view.mode}`);
     const scores = Array.isArray(board.scores) ? board.scores : [];
     if (scores.length === 0) {
       showNote(`No times yet${view.mode === "all" ? "" : ` for ${MODE_LABELS[view.mode].toLowerCase()}`}. Be the first.`);
@@ -204,7 +202,7 @@ function showName() {
   if (name) nameInput.value = name;
   if (!name) setStatus("Pick a name to play ranked.");
   else if (!rankedBox.checked) setStatus(`Ranked runs are off: terminals are practice.`);
-  else setStatus(`Playing ranked as ${name}. The server deals and times each terminal, so your real ping counts.`, "good");
+  else setStatus(`Playing ranked as ${name}. The server deals and times each terminal, like SkyBlock's pingless ones.`, "good");
 }
 
 async function checkAvailability(name) {
@@ -276,12 +274,7 @@ for (const button of panel.querySelectorAll("[data-mode]")) {
   button.addEventListener("click", () => { view.mode = button.dataset.mode; selectTab("mode", view.mode); load(); });
 }
 rankedBox.addEventListener("change", () => { write(RANKED_KEY, rankedBox.checked); showName(); });
-oldButton.addEventListener("click", () => {
-  view.old = !view.old;
-  oldButton.textContent = view.old ? "Back to ranked times" : "Old times";
-  oldNote.hidden = !view.old;
-  load();
-});
+
 
 document.addEventListener("keydown", event => {
   // The page's own keys (and the drop key) come first.

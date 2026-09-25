@@ -165,7 +165,9 @@ function startTerminal(layout, rankedTerminal) {
 function nextNumber() {
   let next = null;
   for (const pane of panes) {
-    if (!pane.clicked && (next === null || pane.number < next)) next = pane.number;
+    // Ranked terminals are pingless: a pane counts as cleared the moment it's clicked.
+    const cleared = pane.clicked || (ranked !== null && pane.predicted);
+    if (!cleared && (next === null || pane.number < next)) next = pane.number;
   }
   return next;
 }
@@ -244,8 +246,6 @@ function clickPane(index, via = "down") {
     return;
   }
 
-  // Ranked, one pane at a time as in game: the next click needs the server's new window.
-  if (ranked && ranked.awaiting >= 0) return;
   recordClick(index, via);
   if (ranked) {
     sendRankedClick(pane, index, via);
@@ -408,12 +408,13 @@ function showMessage(title, ...details) {
 /* ---------- ranked terminals ---------- */
 
 // With a leaderboard name (and Ranked runs on), terminals are played through the leaderboard
-// server the way SkyBlock's are (worker/src/session.js): it deals the terminal, every click goes to
-// it with the menu's current window id, it clears panes on its ticks, and it times the run. So the
-// Ping setting doesn't apply - your real ping does. Otherwise terminals are local practice.
+// server the way SkyBlock's pingless terminals are (worker/src/session.js): it deals the terminal,
+// clicks count at once and go to it, it clears at most one pane a tick with only a few rapid
+// clicks queued (one too many is rejected and comes back), and it times the run. So the Ping
+// setting doesn't apply - your real ping adds once. Otherwise terminals are local practice.
 
 const DEAL_TIMEOUT_MS = 5000;
-/** The ranked terminal in play: { id, window, awaiting (pane waiting on the server, or -1), sentPath }. */
+/** The ranked terminal in play: { id, sentPath (how much of the pointer's path has gone to the server) }. */
 let ranked = null;
 /** A ranked terminal asked for and not dealt yet: { id, count, timer }. */
 let dealing = null;
@@ -524,33 +525,27 @@ function fromServer(message) {
     clearTimeout(dealing.timer);
     dealing = null;
     socket?.send(JSON.stringify({ type: "ready" }));
-    startTerminal(message.layout, { id: message.id, window: message.window, awaiting: -1, sentPath: 0 });
+    startTerminal(message.layout, { id: message.id, sentPath: 0 });
     return;
   }
   if (!ranked || message.id !== ranked.id) return;
-  if (message.type === "cleared") paneCleared(message.i, message.window, null);
-  else if (message.type === "done") paneCleared(message.i, null, message);
+  if (message.type === "cleared") paneCleared(message.i, null);
+  else if (message.type === "done") paneCleared(message.i, message);
+  else if (message.type === "rejected") paneRejected(message.i);
 }
 
-/** Sends a click to the server, with this browser's record of it; the pane clears when it answers. */
+/**
+ * Sends a click to the server with this browser's record of it. Pingless: the pane clears now and
+ * the next can be clicked straight away; the server confirms it on its tick, or rejects it.
+ */
 function sendRankedClick(pane, index, via) {
-  ranked.awaiting = index;
-  if (panes.every(other => other === pane || other.clicked)) finishing = true;
-  if (settings.clientPrediction) {
-    pane.predicted = true;
-    render();
-    // Odin reloads the terminal if the server hasn't answered by the resolve timeout.
-    ranked.prediction = setTimeout(() => {
-      if (!pane.clicked) {
-        pane.predicted = false;
-        render();
-      }
-    }, settings.resolveTimeout);
-  }
+  pane.predicted = true;
+  if (panes.every(other => other.clicked || other.predicted)) finishing = true;
+  render();
   const click = record.clicks[record.clicks.length - 1];
   const geometry = gridGeometry();
   socket?.send(JSON.stringify({
-    type: "click", window: ranked.window, i: index,
+    type: "click", i: index,
     t: click.t, x: click.x, y: click.y, via, pointer: click.type,
     path: record.path.slice(ranked.sentPath),
     fill: geometry ? [round(geometry.fillX, 3), round(geometry.fillY, 3)] : null
@@ -558,18 +553,28 @@ function sendRankedClick(pane, index, via) {
   ranked.sentPath = record.path.length;
 }
 
-/** The server cleared a pane: the next one can be clicked (with [window]), or the run is [done]. */
-function paneCleared(index, window, done) {
+/** The server cleared a pane on its tick; with [done], that was the last and here's the result. */
+function paneCleared(index, done) {
   const pane = panes[index];
   if (!pane || !ranked) return;
-  clearTimeout(ranked.prediction);
-  ranked.awaiting = -1;
-  ranked.window = window;
   pane.clicked = true;
   pane.predicted = false;
   render();
   if (done) finish(done);
-  else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, "hover");
+}
+
+/**
+ * The server didn't take a click (too many rapid clicks queued, as SkyBlock throttles them): that
+ * pane comes back, with every pane clicked after it, to be clicked again.
+ */
+function paneRejected(index) {
+  const pane = panes[index];
+  if (!pane || !ranked || pane.clicked) return;
+  for (const other of panes) {
+    if (other.predicted && other.number >= pane.number) other.predicted = false;
+  }
+  finishing = false;
+  render();
 }
 
 document.addEventListener("pointermove", event => track(event), { capture: true, passive: true });

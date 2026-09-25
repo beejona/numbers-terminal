@@ -1,19 +1,23 @@
 import { checkRun } from "./checkrun.js";
 
 /**
- * Ranked terminals, run by the server the way Hypixel SkyBlock runs them.
+ * Ranked terminals, run by the server the way Hypixel SkyBlock runs its pingless terminals.
  *
- * The server makes the terminal and owns it. Every click goes to the server with the menu's
- * current window id; the server checks it, clears the pane on its next tick (20 a second, at most
- * one pane a tick) and only then sends back a new window id - which nobody can guess, so there's
- * no "zero ping" way of clicking ahead. A click with any other id is thrown away, as SkyBlock does.
- * So every pane costs a round trip to the server, like it does in game, and the time is the
- * server's own clock from sending the terminal to clearing its last pane: nothing the player's
- * browser says about time counts. Sending too many messages gets you kicked, like "You are
- * clicking too fast". The browser's record of the run (checkrun.js) is still checked on top.
+ * The server makes the terminal and owns it. Clicks count as soon as they're made - the page
+ * clears the pane at once and the next can be clicked straight away, without waiting on the
+ * server - but the server still clears at most one pane a tick (20 a second), and only lets a few
+ * rapid clicks queue up for that: a click past QUEUE_LIMIT is rejected, and so is anything after
+ * it until the missed pane is clicked again. The time is the server's own clock from sending the
+ * terminal to clearing its last pane, so nothing the browser says about time counts, ping adds once
+ * rather than per pane, and nothing can finish faster than one pane a tick. Sending too many
+ * messages gets you kicked, like "You are clicking too fast". The browser's record of the run
+ * (checkrun.js) is still checked on top.
  */
 
 export const TICK_MS = 50;
+// Rapid clicks the server will hold for its ticks; players found SkyBlock's pingless terminals take
+// about 5 before throttling hard.
+export const QUEUE_LIMIT = 5;
 export const MAX_MESSAGES_PER_SECOND = 40;
 // A connection nobody's played on for this long is closed (a Durable Object costs while it's open).
 const IDLE_MS = 20_000;
@@ -21,10 +25,6 @@ const COUNTS = new Set([10, 14]);
 const MODES = new Set(["click", "drop", "hover"]);
 const MAX_PATH = 6000;
 const MAX_PATH_PER_CLICK = 600;
-
-function randomId() {
-  return [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, "0")).join("");
-}
 
 /** 1..count in a random order: the numbers as they sit in the grid, row by row. */
 export function randomLayout(count) {
@@ -44,10 +44,11 @@ export class TerminalGame {
     this.count = count;
     this.mode = mode;
     this.layout = layout;
-    this.window = randomId();
     this.start = now;
     this.next = 1;
     this.lastTick = 0;
+    // Ticks (server time) of accepted clicks still waiting to clear.
+    this.queued = [];
     this.done = false;
     this.clicks = [];
     this.path = [];
@@ -55,38 +56,41 @@ export class TerminalGame {
   }
 
   /**
-   * A click as it reaches the server. Returns null when it's thrown away (stale window id,
-   * finished terminal, nonsense), { wrong: true } for a wrong pane (the window stays), or the
-   * pane cleared: when (server time) to tell the player, with the new window id.
+   * A click as it reaches the server. Returns null when it's ignored (finished terminal, nonsense),
+   * { rejected: true } for a click that doesn't count (a wrong pane, one after a rejected pane, or
+   * one too many queued), or the pane accepted: the tick (server time) it clears on.
    */
   click(message, now) {
-    if (this.done || typeof message.window !== "string" || message.window !== this.window) return null;
-    const index = message.i;
-    if (!Number.isInteger(index) || index < 0 || index >= this.count) return null;
-    if (this.layout[index] !== this.next) return { wrong: true };
-
-    // Cleared on the next tick after it arrives, and never two in one tick.
-    const elapsed = Math.max(0, now - this.start);
-    let tick = Math.max(TICK_MS, Math.ceil(elapsed / TICK_MS) * TICK_MS);
-    if (tick <= this.lastTick) tick = this.lastTick + TICK_MS;
-    this.lastTick = tick;
-
-    // What the browser says about the click, for the record checks - never for the time.
-    this.clicks.push({
-      i: index, t: Number(message.t), x: message.x, y: message.y,
-      via: message.via, type: message.pointer, server: tick
-    });
+    // The pointer's path counts whatever happens to the click, so a pane clicked again after a
+    // rejection still has the pointer's way onto it on record.
     if (Array.isArray(message.path)) {
       for (const point of message.path.slice(0, MAX_PATH_PER_CLICK)) {
         if (this.path.length < MAX_PATH) this.path.push(point);
       }
     }
     if (Array.isArray(message.fill)) this.fill = message.fill;
+    if (this.done) return null;
+    const index = message.i;
+    if (!Number.isInteger(index) || index < 0 || index >= this.count) return null;
+    if (this.layout[index] !== this.next) return { rejected: true, i: index };
+    const elapsed = Math.max(0, now - this.start);
+    this.queued = this.queued.filter(tick => tick > elapsed);
+    if (this.queued.length >= QUEUE_LIMIT) return { rejected: true, i: index };
 
+    // Cleared on the next tick after it arrives, and never two in one tick.
+    let tick = Math.max(TICK_MS, Math.ceil(elapsed / TICK_MS) * TICK_MS);
+    if (tick <= this.lastTick) tick = this.lastTick + TICK_MS;
+    this.lastTick = tick;
+    this.queued.push(tick);
+
+    // What the browser says about the click, for the record checks - never for the time.
+    this.clicks.push({
+      i: index, t: Number(message.t), x: message.x, y: message.y,
+      via: message.via, type: message.pointer, server: tick
+    });
     this.next++;
-    this.window = randomId();
     this.done = this.next > this.count;
-    return { i: index, at: this.start + tick, tick, window: this.window, done: this.done };
+    return { i: index, at: this.start + tick, tick, done: this.done };
   }
 
   /** The browser's record of the run, checked the same way as before (time aside: that's ours). */
@@ -178,7 +182,7 @@ export class Session {
     // earlier terminal on the same connection can't be mistaken for this one's.
     this.game.id = id;
     this.rtt = null;
-    this.send({ type: "terminal", id, layout: this.game.layout, window: this.game.window, tick: TICK_MS });
+    this.send({ type: "terminal", id, layout: this.game.layout, tick: TICK_MS, queue: QUEUE_LIMIT });
   }
 
   /** The page answers the terminal as soon as it arrives: that round trip is the player's ping. */
@@ -191,16 +195,16 @@ export class Session {
     if (!game) return;
     const result = game.click(message, this.now());
     if (!result) return;
-    if (result.wrong) {
-      this.send({ type: "wrong", id: game.id, i: message.i });
+    if (result.rejected) {
+      this.send({ type: "rejected", id: game.id, i: result.i });
       return;
     }
-    // Cleared on the tick: the player hears back then, not before.
+    // Cleared on the tick: the player hears back then (the page has shown it cleared all along).
     const delay = result.at - this.now();
     if (delay > 0) await this.wait(delay);
     if (this.closed || game !== this.game) return;
     if (!result.done) {
-      this.send({ type: "cleared", id: game.id, i: result.i, window: result.window, tick: result.tick });
+      this.send({ type: "cleared", id: game.id, i: result.i, tick: result.tick });
       return;
     }
 
