@@ -160,18 +160,20 @@ async function nameStatus(url, env) {
 }
 
 /**
- * Counts a new name against this address's allowance for the day; false once it's used up. The
- * address is only kept hashed with a secret, and old days are dropped.
+ * Counts a new name against this address's allowance for the day: null while there's some left, or
+ * why not. The address is only kept hashed with a secret, and old days are dropped. Without the
+ * secret the hash would be easy to reverse (there aren't many addresses), so no names are made.
  */
-async function mayClaimName(address, env) {
+async function newNameRefusal(address, env) {
+  if (!env.ADMIN_TOKEN) return "New names can't be made right now.";
   const day = Math.floor(Date.now() / 86_400_000);
-  const who = await sha256(`${env.ADMIN_TOKEN || ""}|${address}`);
+  const who = await sha256(`${env.ADMIN_TOKEN}|${address}`);
   const row = await env.DB.prepare(
     `INSERT INTO name_claims (who, day, n) VALUES (?1, ?2, 1)
      ON CONFLICT (who, day) DO UPDATE SET n = n + 1 RETURNING n`
   ).bind(who, day).first();
   if (Math.random() < 0.05) await env.DB.prepare("DELETE FROM name_claims WHERE day < ?1").bind(day - 1).run();
-  return row.n <= NEW_NAMES_PER_DAY;
+  return row.n <= NEW_NAMES_PER_DAY ? null : "Too many new names today. Try again tomorrow.";
 }
 
 async function readBody(request) {
@@ -215,7 +217,8 @@ export async function saveRun(env, { name, key, address, count, mode, time, ping
   const holder = await env.DB.prepare("SELECT name FROM names WHERE name_key = ?1").bind(nameKey).first();
   const shownName = holder ? holder.name : name;
   if (!holder) {
-    if (!(await mayClaimName(address, env))) return { error: "Too many new names today. Try again tomorrow." };
+    const refusal = await newNameRefusal(address, env);
+    if (refusal) return { error: refusal };
     await env.DB.prepare("INSERT INTO names (name_key, name, owner, created_at) VALUES (?1, ?2, ?3, ?4)")
       .bind(nameKey, name, await sha256(key), now).run();
   }

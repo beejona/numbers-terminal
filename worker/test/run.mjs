@@ -245,6 +245,10 @@ for (let i = 0; i < 8; i++) {
 }
 check(names === 5 && /Too many new names/.test(r.error), `one address can only make 5 new names a day (${names})`);
 check(db.prepare("SELECT who FROM name_claims").all().every(row => !row.who.includes("8.8.4.4")), "addresses aren't stored as they are");
+const claims = db.prepare("SELECT COUNT(*) AS n FROM name_claims").get().n;
+r = await saveRun({ ...env, ADMIN_TOKEN: undefined }, { name: "NoSecret", key: "7".repeat(64), address: "8.8.8.8", count: 14, mode: "click", time: 3000, ping: 0, run: {} });
+check(/can't be made/.test(r.error || "") && !db.prepare("SELECT 1 FROM names WHERE name_key = 'nosecret'").get() && db.prepare("SELECT COUNT(*) AS n FROM name_claims").get().n === claims,
+  "without the secret no new names are made, so no address is stored with an unsalted hash");
 
 r = await call("GET", "/v1/admin/run?name=beejona&count=14&mode=click", undefined, { Authorization: "Bearer admin-test-token" });
 check(r.status === 200 && r.body.run.clicks.length === 14, "the admin can read a best run's record");
