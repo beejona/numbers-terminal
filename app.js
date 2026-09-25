@@ -141,6 +141,7 @@ function newTerminal() {
   elements.best.classList.remove("fresh");
   build();
   render();
+  startRecord();
 }
 
 /** The number that has to be clicked next, or null once the terminal is solved. */
@@ -164,13 +165,17 @@ function build() {
       Object.assign(document.createElement("span"), { className: "count" })
     );
     slot.addEventListener("pointerdown", event => {
-      if (event.button !== 0) return;
+      // Only real presses: clicks a script makes up don't play the terminal.
+      if (event.button !== 0 || !event.isTrusted) return;
       event.preventDefault();
-      clickPane(index);
+      track(event, false);
+      clickPane(index, "down");
     });
-    slot.addEventListener("pointerenter", () => {
+    slot.addEventListener("pointerenter", event => {
+      if (!event.isTrusted) return;
+      track(event);
       hoveredIndex = index;
-      if (hoverClicks()) clickPane(index, true);
+      if (hoverClicks()) clickPane(index, "hover");
     });
     slot.addEventListener("pointerleave", () => {
       if (hoveredIndex === index) hoveredIndex = -1;
@@ -203,7 +208,9 @@ function hoverClicks() {
   return settings.hoverMode || (settings.dropKey && dropKeyHeld);
 }
 
-function clickPane(index, viaHover = false) {
+/** Clears a pane if it's the next one. [via] is how: "down" (pressed), "hover" or "key" (drop key). */
+function clickPane(index, via = "down") {
+  const viaHover = via !== "down";
   const pane = panes[index];
   if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
   // First click protection: the mod swallows clicks for a moment after the terminal opens.
@@ -219,6 +226,8 @@ function clickPane(index, viaHover = false) {
     }
     return;
   }
+
+  recordClick(index, via);
 
   // With client prediction the pane clears immediately; otherwise it waits for the "server",
   // which is what ping simulates here.
@@ -245,7 +254,7 @@ function clickPane(index, viaHover = false) {
     pane.predicted = false;
     render();
     if (solved) finish();
-    else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, true);
+    else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, "hover");
   };
   if (settings.ping > 0) setTimeout(resolve, settings.ping);
   else resolve();
@@ -280,11 +289,97 @@ function finish() {
 
   // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
   window.dispatchEvent(new CustomEvent("terminal:finish", {
-    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping }
+    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, run: finishRecord() }
   }));
 
   if (settings.autoRestart) setTimeout(newTerminal, 800);
 }
+
+/* ---------- run record ---------- */
+
+// Each run keeps a record for the leaderboard, whose server checks it before accepting a time:
+// the layout, every pane as it was cleared (when, where the pointer was, and how), and the
+// pointer's path. Positions are in panes from the first pane's top-left corner: x 2.5 is halfway
+// across the third column. Only real input counts - events a script makes up are ignored.
+const PATH_SAMPLE_MS = 16;
+const MAX_PATH = 4000;
+let record = null;
+let pathPane = null;
+/** The latest real pointer event's position, in page pixels, and what made it. */
+let pointer = null;
+
+function round(value, places) {
+  const scale = 10 ** places;
+  return Math.round(value * scale) / scale;
+}
+
+/** Where the panes are on the page right now: the first one's corner, the pitch, and how much of it a pane fills. */
+function gridGeometry() {
+  const slots = elements.terminal.children;
+  const columns = Math.ceil(panes.length / ROWS);
+  if (slots.length <= columns) return null;
+  const first = slots[0].getBoundingClientRect();
+  const pitchX = slots[1].getBoundingClientRect().left - first.left;
+  const pitchY = slots[columns].getBoundingClientRect().top - first.top;
+  if (!(pitchX > 0 && pitchY > 0)) return null;
+  return { left: first.left, top: first.top, pitchX, pitchY, fillX: first.width / pitchX, fillY: first.height / pitchY, columns };
+}
+
+function toPanes(clientX, clientY, geometry) {
+  return [(clientX - geometry.left) / geometry.pitchX, (clientY - geometry.top) / geometry.pitchY];
+}
+
+function paneAt(x, y, geometry) {
+  const column = Math.floor(x);
+  const row = Math.floor(y);
+  if (column < 0 || column >= geometry.columns || row < 0 || row >= ROWS) return -1;
+  if (x - column > geometry.fillX || y - row > geometry.fillY) return -1;
+  return row * geometry.columns + column;
+}
+
+function startRecord() {
+  record = { layout: panes.map(pane => pane.number), clicks: [], path: [] };
+  pathPane = null;
+}
+
+/**
+ * Notes a real pointer event: where the pointer is, and (unless [sample] is false) a point on its
+ * path - every move onto another pane, and otherwise about one a frame.
+ */
+function track(event, sample = true) {
+  if (!event.isTrusted) return;
+  pointer = { clientX: event.clientX, clientY: event.clientY, type: event.pointerType || "mouse" };
+  if (!sample || !running || !record) return;
+  const geometry = gridGeometry();
+  if (!geometry) return;
+  const [x, y] = toPanes(event.clientX, event.clientY, geometry);
+  const t = performance.now() - startedAt;
+  const pane = paneAt(x, y, geometry);
+  const last = record.path[record.path.length - 1];
+  if (record.path.length < MAX_PATH && (pane !== pathPane || !last || t - last[0] >= PATH_SAMPLE_MS)) {
+    record.path.push([round(t, 1), round(x, 3), round(y, 3)]);
+    pathPane = pane;
+  }
+}
+
+function recordClick(index, via) {
+  if (!record) return;
+  const geometry = gridGeometry();
+  const [x, y] = pointer && geometry ? toPanes(pointer.clientX, pointer.clientY, geometry) : [null, null];
+  record.clicks.push({
+    i: index, t: round(performance.now() - startedAt, 1),
+    x: x === null ? null : round(x, 3), y: y === null ? null : round(y, 3),
+    via, type: pointer ? pointer.type : null
+  });
+}
+
+function finishRecord() {
+  const geometry = gridGeometry();
+  if (!record || !geometry) return null;
+  return { ...record, fill: [round(geometry.fillX, 3), round(geometry.fillY, 3)] };
+}
+
+document.addEventListener("pointermove", event => track(event), { capture: true, passive: true });
 
 /** How the run was played: sweeping without a key, sweeping with the drop key, or clicking. */
 function runMode() {
@@ -413,7 +508,7 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     dropKeyHeld = true;
     // Pressing it while already over a pane counts too, not just moving onto one.
-    if (hoveredIndex >= 0) clickPane(hoveredIndex, true);
+    if (hoveredIndex >= 0) clickPane(hoveredIndex, "key");
     return;
   }
 

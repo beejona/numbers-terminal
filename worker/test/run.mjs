@@ -3,6 +3,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
+import { humanRun, randomSource } from "./humanrun.mjs";
 
 /** Enough of D1's API for the Worker: prepare().bind().first()/all()/run(), and batch(). */
 function d1(db) {
@@ -25,7 +26,7 @@ function limiter(limit) {
 }
 
 const db = new DatabaseSync(":memory:");
-for (const file of ["0001_init.sql", "0002_hardening.sql"]) db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
+for (const file of ["0001_init.sql", "0002_hardening.sql", "0003_run_records.sql"]) db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8"));
 const env = {
   DB: d1(db), ALLOWED_ORIGINS: "https://beejona.github.io", ADMIN_TOKEN: "admin-test-token",
   READ_LIMIT: limiter(120), POST_LIMIT: limiter(10)
@@ -47,7 +48,13 @@ async function call(method, path, body, headers = {}) {
   return { status: response.status, body: await response.json().catch(() => null), headers: response.headers };
 }
 const keyA = "a".repeat(64), keyB = "b".repeat(64);
-const run = (over = {}) => ({ name: "Beejona", key: keyA, count: 14, mode: "click", ping: 0, time_ms: 2500, ...over });
+const random = randomSource(42);
+/** A post, with a person-like record of the run to match (unless the test brings its own). */
+const run = (over = {}) => {
+  const post = { name: "Beejona", key: keyA, count: 14, mode: "click", ping: 0, time_ms: 2500, ...over };
+  if (!("run" in over)) post.run = humanRun({ count: post.count, mode: post.mode, time: post.time_ms, ping: post.ping, random });
+  return post;
+};
 
 let r = await call("POST", "/v1/scores", run());
 check(r.status === 200 && r.body.rank === 1 && r.body.best_ms === 2500, "first run posts, rank 1");
@@ -142,6 +149,58 @@ const hoverBefore = r.body.scores[0].time_ms;
 await call("POST", "/v1/scores", run({ name: "Hoverer", key: keyB, mode: "hover", time_ms: hoverBefore - 10 }));
 r = await call("GET", "/v1/scores?count=14&mode=hover");
 check(r.body.scores[0].time_ms === hoverBefore - 10, "a new best shows at once despite the board cache");
+
+// ---- run records ----
+const clone = value => JSON.parse(JSON.stringify(value));
+const recorded = (count, mode, time, change) => {
+  const record = humanRun({ count, mode, time, random });
+  change?.(record);
+  return record;
+};
+async function refused(record, reason, over = {}) {
+  const post = run({ name: "Checker", key: "5".repeat(64), time_ms: 2000, ...over, run: record });
+  const response = await call("POST", "/v1/scores", post);
+  check(response.status === 400 && reason.test(response.body.error || ""), `refused: ${response.body.error || response.status}`);
+}
+await refused(undefined, /no record/);
+await refused(recorded(14, "click", 2000, r => { [r.clicks[3], r.clicks[4]] = [r.clicks[4], r.clicks[3]]; }), /(in order|hold together)/);
+await refused(recorded(14, "click", 2000, r => { r.clicks[5].x += 1.5; }), /wasn't on its pane/);
+await refused(recorded(14, "click", 2600), /time doesn't match/);
+await refused(recorded(14, "hover", 2000), /hovered/);
+await refused(recorded(14, "click", 2000, r => { r.path = []; }), /without the pointer moving/);
+await refused(recorded(14, "click", 2000, r => {
+  r.clicks[7].t = r.clicks[6].t + 12;
+  r.path.push([r.clicks[6].t + 6, r.clicks[7].x, r.clicks[7].y]);
+  r.path.sort((a, b) => a[0] - b[0]);
+}), /closer together/);
+await refused(recorded(14, "click", 2000, r => {
+  // A script clicking every 150 ms, dead on time.
+  r.clicks.forEach((c, k) => { c.t = 100 + k * 150; });
+  r.path = r.clicks.map(c => [c.t - 20, c.x, c.y]);
+}), /evenly spaced/, { time_ms: 100 + 13 * 150 + 1 });
+await refused(recorded(14, "click", 2000, r => {
+  const columns = 7;
+  r.clicks.forEach(c => { c.x = c.i % columns + 0.5; c.y = Math.floor(c.i / columns) + 0.5; });
+  r.path = r.clicks.map(c => [c.t - 20, c.x, c.y]);
+}), /exact middle/);
+await refused({ ...recorded(14, "click", 2000), path: Array(7000).fill([1, 0.5, 0.5]) }, /hold together/);
+
+r = await call("POST", "/v1/scores", run({ name: "TouchPlayer", key: "6".repeat(64), time_ms: 1800, run: humanRun({ count: 14, time: 1800, random, touch: true }) }));
+check(r.status === 200, "taps on a touch screen don't need the pointer moved over first");
+const drop = humanRun({ count: 10, mode: "drop", time: 700, random });
+drop.path = [];
+r = await call("POST", "/v1/scores", run({ name: "Sweeper", key: "4".repeat(64), count: 10, mode: "drop", time_ms: 700, run: drop }));
+check(r.status === 200, "drop key runs only need a record that holds together");
+const pinged = humanRun({ count: 14, time: 2300, ping: 200, random });
+r = await call("POST", "/v1/scores", run({ name: "Pinged", key: "3".repeat(64), time_ms: 2300, ping: 200, run: pinged }));
+check(r.status === 200, "a run played with ping lines up with its time");
+
+r = await call("GET", "/v1/admin/run?name=pinged&count=14&mode=click", undefined, { Authorization: "Bearer admin-test-token" });
+check(r.status === 200 && r.body.time_ms === 2300 && r.body.run.clicks.length === 14, "the admin can read a best run's record");
+r = await call("GET", "/v1/admin/run?name=pinged&count=14&mode=click");
+check(r.status === 401, "and nobody else can");
+r = await call("GET", "/v1/scores?count=14&mode=click");
+check(!JSON.stringify(r.body).includes("layout"), "boards don't send out run records");
 
 console.log(failures ? `${failures} FAILED` : "all passed");
 process.exit(failures ? 1 : 0);

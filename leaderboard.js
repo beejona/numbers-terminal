@@ -1,4 +1,4 @@
-import { checkName } from "./namefilter.js?v=8";
+import { checkName } from "./namefilter.js?v=10";
 
 /**
  * The live leaderboard panel. Pick a name once; from then on every run that beats your best for
@@ -77,7 +77,7 @@ function currentCount() {
   return Number(settings.numberCount) === 10 ? 10 : 14;
 }
 
-/** This browser's best per size and mode, as { "14": { click: { time_ms, ping, posted } } }. */
+/** This browser's best per size and mode, as { "14": { click: { time_ms, ping, run, posted } } }. */
 function bests() {
   return read(BESTS_KEY, {});
 }
@@ -99,7 +99,8 @@ async function postRun(count, mode, run) {
   if (!name) return null;
   const result = await api("/v1/scores", {
     method: "POST",
-    body: JSON.stringify({ name, key: secret(), count, mode, ping: run.ping, time_ms: run.time_ms })
+    // run.run is the record of the run (app.js) that the server checks the time against.
+    body: JSON.stringify({ name, key: secret(), count, mode, ping: run.ping, time_ms: run.time_ms, run: run.run })
   });
   const all = bests();
   const entry = all[count]?.[mode];
@@ -141,14 +142,14 @@ async function postPending() {
 /* ---------- runs ---------- */
 
 window.addEventListener("terminal:finish", async event => {
-  const { seconds, count, mode, ping } = event.detail;
+  const { seconds, count, mode, ping, run: record } = event.detail;
   // Rounded the way the page shows it (toFixed), so the board and the Best box always agree.
   const time = Math.round(Number(seconds.toFixed(3)) * 1000);
   const all = bests();
   all[count] ??= {};
   const previous = all[count][mode];
   if (previous && previous.time_ms <= time) return;
-  const run = { time_ms: time, ping, posted: false };
+  const run = { time_ms: time, ping, run: record, posted: false };
   all[count][mode] = run;
   write(BESTS_KEY, all);
 

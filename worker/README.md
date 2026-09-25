@@ -17,6 +17,11 @@ this repo. To replace it, put a new one in both places (`npx wrangler secret put
       -d '{"name": "SomeName", "block": true}' \
       https://numbers-terminal-leaderboard.numbers-terminal-leaderboard.workers.dev/v1/admin/remove
 
+See a best run's record (for a suspicious time):
+
+    curl -H "Authorization: Bearer $(security find-generic-password -s numbers-terminal-admin -w)" \
+      "https://numbers-terminal-leaderboard.numbers-terminal-leaderboard.workers.dev/v1/admin/run?name=SomeName&count=14&mode=click"
+
 Tests: `node test/run.mjs` (the Worker against node:sqlite standing in for D1) and
 `node test/serve.mjs` (runs it on http://127.0.0.1:8787; open the page with
 `?api=http://127.0.0.1:8787`).

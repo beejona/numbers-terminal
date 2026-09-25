@@ -1,12 +1,17 @@
 import { checkName } from "../../namefilter.js";
+import { checkRun } from "./checkrun.js";
 
 /**
  * The numbers terminal leaderboard.
  *
  *   GET  /v1/scores?count=14&mode=all|click|drop|hover   the board (each name's best)
  *   GET  /v1/name?name=Beejona&owner=<sha-256 of key>    whether a name is free, yours or taken
- *   POST /v1/scores {name, key, count, mode, ping, time_ms}   post a run; keeps only a name's best
+ *   POST /v1/scores {name, key, count, mode, ping, time_ms, run}   post a run; keeps only a name's best
  *   POST /v1/admin/remove {name, block}   (Authorization: Bearer ADMIN_TOKEN) take a name off
+ *   GET  /v1/admin/run?name=&count=&mode=  (Authorization: Bearer ADMIN_TOKEN) a best run's record
+ *
+ * Every posted run carries its record (checkrun.js), which has to match the time and pass the
+ * checks for scripted clicking. The record of each best is kept.
  *
  * Times come from the player's browser, so they can't be proven - only checked for being possible.
  * Names are checked here (namefilter.js) whatever the page did, and a name belongs to the browser
@@ -27,7 +32,8 @@ const MIN_MS_PER_PANE = 25;
 const MAX_TIME_MS = 60_000;
 const MAX_PING = 400;
 const BOARD_SIZE = 100;
-const MAX_BODY = 1024;
+// A run's record of clicks and pointer path is most of a post.
+const MAX_BODY = 160_000;
 const NEW_NAMES_PER_DAY = 5;
 const BOARD_CACHE_MS = 10_000;
 
@@ -48,6 +54,7 @@ export default {
       if (url.pathname === "/v1/scores" && request.method === "POST") return await post(request, env, cors);
       if (url.pathname === "/v1/name" && request.method === "GET") return json(await nameStatus(url, env), 200, cors);
       if (url.pathname === "/v1/admin/remove" && request.method === "POST") return await remove(request, env, cors);
+      if (url.pathname === "/v1/admin/run" && request.method === "GET") return await runRecord(request, url, env, cors);
       return json({ error: "Not found." }, 404, cors);
     } catch (error) {
       console.error(error);
@@ -183,7 +190,7 @@ async function readBody(request) {
 async function post(request, env, cors) {
   const body = await readBody(request);
   if (!body) return json({ error: "Bad request." }, 400, cors);
-  const { name, key, count, mode, ping, time_ms: time } = body;
+  const { name, key, count, mode, ping, time_ms: time, run } = body;
 
   const check = checkName(name);
   if (!check.ok) return json({ error: check.reason }, 400, cors);
@@ -194,6 +201,8 @@ async function post(request, env, cors) {
   if (!Number.isInteger(time) || time < minimum || time > MAX_TIME_MS) {
     return json({ error: "That time isn't possible." }, 400, cors);
   }
+  const problem = checkRun(run, { count, mode, ping, time });
+  if (problem) return json({ error: problem }, 400, cors);
 
   const nameKey = name.toLowerCase();
   if (await env.DB.prepare("SELECT 1 FROM blocked_names WHERE name_key = ?1").bind(nameKey).first()) {
@@ -212,11 +221,11 @@ async function post(request, env, cors) {
 
   // Only ever keeps the faster time.
   await env.DB.prepare(
-    `INSERT INTO scores (count, mode, name_key, name, time_ms, ping, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    `INSERT INTO scores (count, mode, name_key, name, time_ms, ping, updated_at, run) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
      ON CONFLICT (count, mode, name_key) DO UPDATE SET time_ms = excluded.time_ms, ping = excluded.ping,
-       name = excluded.name, updated_at = excluded.updated_at
+       name = excluded.name, updated_at = excluded.updated_at, run = excluded.run
      WHERE excluded.time_ms < scores.time_ms`
-  ).bind(count, mode, nameKey, shownName, time, ping, now).run();
+  ).bind(count, mode, nameKey, shownName, time, ping, now, JSON.stringify(run)).run();
   boardCache.clear();
 
   const best = await env.DB.prepare("SELECT time_ms FROM scores WHERE count = ?1 AND mode = ?2 AND name_key = ?3")
@@ -226,9 +235,23 @@ async function post(request, env, cors) {
   return json({ ok: true, name: shownName, best_ms: best.time_ms, improved: best.time_ms === time, rank: ahead.n + 1 }, 200, cors);
 }
 
-async function remove(request, env, cors) {
+async function isAdmin(request, env) {
   const auth = request.headers.get("Authorization") || "";
-  if (!env.ADMIN_TOKEN || !(await sameSecret(auth, `Bearer ${env.ADMIN_TOKEN}`))) return json({ error: "Not allowed." }, 401, cors);
+  return Boolean(env.ADMIN_TOKEN) && (await sameSecret(auth, `Bearer ${env.ADMIN_TOKEN}`));
+}
+
+/** A best run's record, for looking into a suspicious time. */
+async function runRecord(request, url, env, cors) {
+  if (!(await isAdmin(request, env))) return json({ error: "Not allowed." }, 401, cors);
+  const row = await env.DB.prepare(
+    "SELECT name, time_ms, ping, updated_at, run FROM scores WHERE name_key = ?1 AND count = ?2 AND mode = ?3"
+  ).bind(String(url.searchParams.get("name") || "").toLowerCase(), Number(url.searchParams.get("count")), url.searchParams.get("mode")).first();
+  if (!row) return json({ error: "No such run." }, 404, cors);
+  return json({ ...row, run: row.run ? JSON.parse(row.run) : null }, 200, cors);
+}
+
+async function remove(request, env, cors) {
+  if (!(await isAdmin(request, env))) return json({ error: "Not allowed." }, 401, cors);
   const body = await readBody(request);
   if (!body || typeof body.name !== "string") return json({ error: "Bad request." }, 400, cors);
   const nameKey = body.name.toLowerCase();

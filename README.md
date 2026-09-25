@@ -51,8 +51,13 @@ its ping.
 - Names are Minecraft-style (3 to 16 letters, numbers, underscores), and slurs are refused, also
   when spelled with numbers, underscores or repeated letters (`namefilter.js`).
 - A name belongs to the browser that first used it, so nobody else can post under it.
-- Times come from the browser, so they can't be proven; the server only turns down impossible ones:
-  a Click run under half a second, or a Drop key or Hover run under 25 ms a pane. Names and times can be taken off by hand (see `worker/`).
+- Times come from the browser, so they can't be proven. Each run is posted with a record of it -
+  the layout, when and where each pane was cleared, and the pointer's path - which the server checks
+  against the time (`worker/src/checkrun.js`): the clicks have to be in order and on their panes,
+  the time has to match them, a Click run has to be all real clicks with the pointer moved onto
+  each pane, no closer together than a hand can click, not machine-evenly spaced and not all dead
+  centre. Click runs under half a second, and Drop key or Hover runs under 25 ms a pane, are turned
+  down outright. Clicks made up by a script don't play the terminal at all. Names and times can be taken off by hand (see `worker/`).
 
 The server is a Cloudflare Worker with a D1 database, in `worker/`. `node worker/test/run.mjs`
 tests it, and `node worker/test/serve.mjs` runs it locally on port 8787 (open the page with

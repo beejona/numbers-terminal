@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 
 const db = new DatabaseSync(process.env.DB_FILE || ":memory:");
-for (const file of ["0001_init.sql", "0002_hardening.sql"]) {
+for (const file of ["0001_init.sql", "0002_hardening.sql", "0003_run_records.sql"]) {
   db.exec(readFileSync(new URL(`../migrations/${file}`, import.meta.url), "utf8").replace(/CREATE (TABLE|INDEX) /g, "CREATE $1 IF NOT EXISTS "));
 }
 const unlimited = { async limit() { return { success: true }; } };
