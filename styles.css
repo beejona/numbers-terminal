@@ -112,9 +112,10 @@ kbd {
   transition: background-color 40ms linear;
 }
 
-/* An unclicked pane the solver isn't highlighting. */
+/* An unclicked pane the solver isn't highlighting - and a clicked one, which keeps the same
+   background instead of dropping out of the grid. */
 .slot.pane { background: rgba(255, 255, 255, 0.11); }
-.slot.done { background: transparent; color: transparent; cursor: default; }
+.slot.done { background: rgba(255, 255, 255, 0.11); color: transparent; cursor: default; }
 .slot.next-1 { background: var(--order1); color: #0d1a0d; }
 .slot.next-2 { background: var(--order2); color: #0d1a0d; }
 .slot.next-3 { background: var(--order3); color: #eaf7ea; }
