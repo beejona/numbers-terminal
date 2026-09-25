@@ -25,6 +25,9 @@ const COUNTS = new Set([10, 14]);
 const MODES = new Set(["click", "drop", "hover"]);
 const MAX_PATH = 6000;
 const MAX_PATH_PER_CLICK = 600;
+// The page's clock starts when the terminal reaches it, so a click it made at t can't reach us before
+// t has passed here too. A little slack for how finely each side reads its clock.
+const CLOCK_SLACK_MS = 25;
 
 /** 1..count in a random order: the numbers as they sit in the grid, row by row. */
 export function randomLayout(count) {
@@ -86,7 +89,7 @@ export class TerminalGame {
     // What the browser says about the click, for the record checks - never for the time.
     this.clicks.push({
       i: index, t: Number(message.t), x: message.x, y: message.y,
-      via: message.via, type: message.pointer, server: tick
+      via: message.via, type: message.pointer, arrived: elapsed, server: tick
     });
     this.next++;
     this.done = this.next > this.count;
@@ -95,7 +98,11 @@ export class TerminalGame {
 
   /** The browser's record of the run, checked the same way as before (time aside: that's ours). */
   recordProblem() {
-    const clicks = this.clicks.map(({ server, ...click }) => click);
+    // A record of slow, human-looking clicks for clicks that came in a tick apart was made up.
+    if (this.clicks.some(click => !(click.t <= click.arrived + CLOCK_SLACK_MS))) {
+      return "This run's clicks reached the server before its record says they were made.";
+    }
+    const clicks = this.clicks.map(({ server, arrived, ...click }) => click);
     const run = { layout: this.layout, clicks, path: this.path, fill: this.fill };
     const last = clicks[clicks.length - 1];
     return checkRun(run, { count: this.count, mode: this.mode, ping: 0, time: last ? last.t : 0 });

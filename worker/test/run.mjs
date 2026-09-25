@@ -85,7 +85,7 @@ function simulation() {
  * without waiting on the server (pingless), [latency] ms each way, and goes back to a pane when the
  * server rejects it. Returns what the player heard.
  */
-async function play({ count = 14, mode = "click", recordMode = mode, think = () => 150, latency = 20, player = null } = {}) {
+async function play({ count = 14, mode = "click", recordMode = mode, think = () => 150, latency = 20, player = null, forge = false } = {}) {
   const sim = simulation();
   const heard = [];
   let terminal = null, fake = null, next = 0, done = null, rejected = 0, kicked = false;
@@ -97,14 +97,21 @@ async function play({ count = 14, mode = "click", recordMode = mode, think = () 
   });
   const toServer = message => sim.schedule(sim.now() + latency, () => { session.onMessage(JSON.stringify(message)); });
   const sentPath = new Set();
+  let arrived = 0, lastT = 0;
   function clickAt(k, delay) {
     sim.schedule(sim.now() + delay, () => {
       if (next !== k || done || kicked) return;
       const c = fake.clicks[k];
+      // The record's times are when the player really clicked (unless [forge] makes them up), on
+      // the page's clock from the terminal arriving; the path onto the pane is stretched to fit.
+      const t = forge ? c.t : sim.now() - arrived;
+      const from = k ? fake.clicks[k - 1].t : -1;
+      const retime = time => forge ? time : +(lastT + (time - Math.max(0, from)) / (c.t - Math.max(0, from)) * (t - lastT)).toFixed(1);
       // The path goes once; a pane clicked again after a rejection has it on record already.
-      const path = sentPath.has(k) ? [] : fake.path.filter(p => p[0] > (k ? fake.clicks[k - 1].t : -1) && p[0] <= c.t);
+      const path = sentPath.has(k) ? [] : fake.path.filter(p => p[0] > from && p[0] <= c.t).map(([time, x, y]) => [retime(time), x, y]);
       sentPath.add(k);
-      toServer({ type: "click", i: c.i, t: c.t, x: c.x, y: c.y, via: c.via, pointer: c.type, path, fill: fake.fill });
+      lastT = t;
+      toServer({ type: "click", i: c.i, t, x: c.x, y: c.y, via: c.via, pointer: c.type, path, fill: fake.fill });
       next = k + 1;
       if (next < count) clickAt(next, think(next));
     });
@@ -113,6 +120,7 @@ async function play({ count = 14, mode = "click", recordMode = mode, think = () 
     heard.push(message);
     if (message.type === "terminal") {
       terminal = message;
+      arrived = sim.now();
       toServer({ type: "ready" });
       fake = humanRun({ count, mode: recordMode, time: 5000, random, layout: message.layout });
       clickAt(0, think(0));
@@ -146,6 +154,10 @@ check(row.time_ms === done.time_ms && row.ping === 40, `the board has the server
 check(done && done.time_ms === 14 * TICK_MS, `a zero-ping bot can't beat one pane a tick (${done?.time_ms} ms for 14)`);
 ({ done } = await play({ count: 10, think: () => TICK_MS, latency: 0 }));
 check(done && done.time_ms === 10 * TICK_MS, `...or ${10 * TICK_MS} ms for 10 (${done?.time_ms})`);
+// One that clicks every tick but sends a record of a slow, human run.
+({ done } = await play({ player: { name: "SlowStory", key: "8".repeat(64) }, think: () => TICK_MS, latency: 5, forge: true }));
+check(done && /before its record says/.test(done.error || "") && !db.prepare("SELECT 1 FROM ranked_scores WHERE name_key = 'slowstory'").get(),
+  `a made-up record that's slower than the clicks really came isn't saved: "${done?.error}"`);
 // One that fires every click at once: a few queue, the rest bounce, and it can't go faster anyway.
 let kicked;
 ({ done, rejected, kicked } = await play({ think: () => 10, latency: 0 }));
