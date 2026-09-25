@@ -1,43 +1,35 @@
 import { checkName } from "../../namefilter.js";
-import { checkRun } from "./checkrun.js";
+import { Session } from "./session.js";
 
 /**
  * The numbers terminal leaderboard.
  *
- *   GET  /v1/scores?count=14&mode=all|click|drop|hover   the board (each name's best)
+ *   GET  /v1/play (WebSocket)   play a ranked terminal: the server runs it and times it (session.js)
+ *   GET  /v1/scores?count=14&mode=all|click|drop|hover[&old=1]   a board (each name's best); old=1
+ *        for the old times, reported by browsers before terminals ran on the server
  *   GET  /v1/name?name=Beejona&owner=<sha-256 of key>    whether a name is free, yours or taken
- *   POST /v1/scores {name, key, count, mode, ping, time_ms, run}   post a run; keeps only a name's best
  *   POST /v1/admin/remove {name, block}   (Authorization: Bearer ADMIN_TOKEN) take a name off
- *   GET  /v1/admin/run?name=&count=&mode=  (Authorization: Bearer ADMIN_TOKEN) a best run's record
+ *   GET  /v1/admin/run?name=&count=&mode=[&old=1]  (Authorization: Bearer ADMIN_TOKEN) a best run's record
  *
- * Every posted run carries its record (checkrun.js), which has to match the time and pass the
- * checks for scripted clicking. The record of each best is kept.
- *
- * Times come from the player's browser, so they can't be proven - only checked for being possible.
+ * Ranked runs work the way SkyBlock's terminals do: the server makes the terminal, every click goes
+ * to it with the current window id, and it times the run itself, so no time comes from the browser.
+ * Each run lives in its own Durable Object (TerminalSession) for the length of the connection.
  * Names are checked here (namefilter.js) whatever the page did, and a name belongs to the browser
- * key that first posted with it, so nobody can post as someone else.
+ * key that first used it, so nobody can play as someone else.
  *
  * Abuse limits: every address gets READ_LIMIT / POST_LIMIT requests a minute (Cloudflare's rate
- * limiter, so no addresses are kept here), at most NEW_NAMES_PER_DAY new names a day, and boards
- * are served from a few seconds' cache so a crowd watching them barely touches the database.
+ * limiter, so no addresses are kept here; each terminal is one request), at most NEW_NAMES_PER_DAY
+ * new names a day, and boards are served from a few seconds' cache.
  */
 
 const COUNTS = new Set([10, 14]);
 const MODES = new Set(["click", "drop", "hover"]);
-// Clicking each pane by hand, nobody finishes under half a second, whatever the size: scripted
-// "click" runs sat just above the old 25 ms a pane. Sweeping (drop key, hover) is much faster, so
-// those modes only have to clear 25 ms a pane.
-const MIN_CLICK_TIME_MS = 500;
-const MIN_MS_PER_PANE = 25;
-const MAX_TIME_MS = 60_000;
-const MAX_PING = 400;
 const BOARD_SIZE = 100;
-// A run's record of clicks and pointer path is most of a post.
-const MAX_BODY = 160_000;
+const MAX_BODY = 1024;
 const NEW_NAMES_PER_DAY = 5;
 const BOARD_CACHE_MS = 10_000;
 
-// Boards recently read, per instance of the Worker: { "14|all": { at, body } }.
+// Boards recently read, per instance of the Worker: { "ranked_scores|14|all": { at, body } }.
 const boardCache = new Map();
 
 export default {
@@ -50,8 +42,12 @@ export default {
       if (limiter && !(await limiter.limit({ key: clientKey(request) })).success) {
         return json({ error: "Slow down a little." }, 429, cors);
       }
+      if (url.pathname === "/v1/play" && request.method === "GET") return play(request, env);
       if (url.pathname === "/v1/scores" && request.method === "GET") return json(await board(url, env), 200, cors);
-      if (url.pathname === "/v1/scores" && request.method === "POST") return await post(request, env, cors);
+      // Times aren't posted any more: pages from before ranked terminals are told to refresh.
+      if (url.pathname === "/v1/scores" && request.method === "POST") {
+        return json({ error: "Runs are timed by the server now. Refresh the page." }, 410, cors);
+      }
       if (url.pathname === "/v1/name" && request.method === "GET") return json(await nameStatus(url, env), 200, cors);
       if (url.pathname === "/v1/admin/remove" && request.method === "POST") return await remove(request, env, cors);
       if (url.pathname === "/v1/admin/run" && request.method === "GET") return await runRecord(request, url, env, cors);
@@ -116,30 +112,33 @@ async function sha256(text) {
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+const tableFor = url => (url.searchParams.get("old") === "1" ? "scores" : "ranked_scores");
+
 async function board(url, env) {
   const count = Number(url.searchParams.get("count") || 14);
   const mode = url.searchParams.get("mode") || "all";
   if (!COUNTS.has(count)) return { error: "Unknown terminal size." };
   if (mode !== "all" && !MODES.has(mode)) return { error: "Unknown mode." };
-  const cacheKey = `${count}|${mode}`;
+  const table = tableFor(url);
+  const cacheKey = `${table}|${count}|${mode}`;
   const cached = boardCache.get(cacheKey);
   if (cached && Date.now() - cached.at < BOARD_CACHE_MS) return cached.body;
-  const body = await readBoard(count, mode, env);
+  const body = { ...(await readBoard(table, count, mode, env)), old: table === "scores" };
   boardCache.set(cacheKey, { at: Date.now(), body });
   return body;
 }
 
-async function readBoard(count, mode, env) {
+async function readBoard(table, count, mode, env) {
   let rows;
   if (mode === "all") {
     // Each name's single best across modes. SQLite fills the other columns from the MIN() row.
     ({ results: rows } = await env.DB.prepare(
-      `SELECT name, MIN(time_ms) AS time_ms, mode, ping, updated_at FROM scores
+      `SELECT name, MIN(time_ms) AS time_ms, mode, ping, updated_at FROM ${table}
        WHERE count = ?1 GROUP BY name_key ORDER BY time_ms ASC, updated_at ASC LIMIT ?2`
     ).bind(count, BOARD_SIZE).all());
   } else {
     ({ results: rows } = await env.DB.prepare(
-      `SELECT name, time_ms, mode, ping, updated_at FROM scores
+      `SELECT name, time_ms, mode, ping, updated_at FROM ${table}
        WHERE count = ?1 AND mode = ?2 ORDER BY time_ms ASC, updated_at ASC LIMIT ?3`
     ).bind(count, mode, BOARD_SIZE).all());
   }
@@ -164,9 +163,9 @@ async function nameStatus(url, env) {
  * Counts a new name against this address's allowance for the day; false once it's used up. The
  * address is only kept hashed with a secret, and old days are dropped.
  */
-async function mayClaimName(request, env) {
+async function mayClaimName(address, env) {
   const day = Math.floor(Date.now() / 86_400_000);
-  const who = await sha256(`${env.ADMIN_TOKEN || ""}|${clientKey(request)}`);
+  const who = await sha256(`${env.ADMIN_TOKEN || ""}|${address}`);
   const row = await env.DB.prepare(
     `INSERT INTO name_claims (who, day, n) VALUES (?1, ?2, 1)
      ON CONFLICT (who, day) DO UPDATE SET n = n + 1 RETURNING n`
@@ -187,52 +186,77 @@ async function readBody(request) {
   }
 }
 
-async function post(request, env, cors) {
-  const body = await readBody(request);
-  if (!body) return json({ error: "Bad request." }, 400, cors);
-  const { name, key, count, mode, ping, time_ms: time, run } = body;
+/** A ranked terminal: the connection is handed to its own TerminalSession. */
+function play(request, env) {
+  if (request.headers.get("Upgrade") !== "websocket") return new Response("Expected a WebSocket.", { status: 426 });
+  const allowed = (env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim());
+  if (!allowed.includes(request.headers.get("Origin") || "")) return new Response("Not allowed.", { status: 403 });
+  return env.SESSIONS.get(env.SESSIONS.newUniqueId()).fetch(request);
+}
 
+/** Why [name] (with this browser [key]) can't play ranked, or null if it can. */
+export async function playerProblem(env, name, key) {
   const check = checkName(name);
-  if (!check.ok) return json({ error: check.reason }, 400, cors);
-  if (typeof key !== "string" || !/^[a-f0-9]{32,128}$/.test(key)) return json({ error: "Bad request." }, 400, cors);
-  if (!COUNTS.has(count) || !MODES.has(mode)) return json({ error: "Bad request." }, 400, cors);
-  if (!Number.isInteger(ping) || ping < 0 || ping > MAX_PING) return json({ error: "Bad request." }, 400, cors);
-  const minimum = mode === "click" ? MIN_CLICK_TIME_MS : count * MIN_MS_PER_PANE;
-  if (!Number.isInteger(time) || time < minimum || time > MAX_TIME_MS) {
-    return json({ error: "That time isn't possible." }, 400, cors);
-  }
-  const problem = checkRun(run, { count, mode, ping, time });
-  if (problem) return json({ error: problem }, 400, cors);
-
+  if (!check.ok) return check.reason;
+  if (typeof key !== "string" || !/^[a-f0-9]{32,128}$/.test(key)) return "Bad request.";
   const nameKey = name.toLowerCase();
-  if (await env.DB.prepare("SELECT 1 FROM blocked_names WHERE name_key = ?1").bind(nameKey).first()) {
-    return json({ error: "That name isn't allowed." }, 400, cors);
-  }
-  const owner = await sha256(key);
+  if (await env.DB.prepare("SELECT 1 FROM blocked_names WHERE name_key = ?1").bind(nameKey).first()) return "That name isn't allowed.";
+  const holder = await env.DB.prepare("SELECT owner FROM names WHERE name_key = ?1").bind(nameKey).first();
+  if (holder && holder.owner !== (await sha256(key))) return "That name is already taken.";
+  return null;
+}
+
+/** Puts a finished ranked run on the board (only ever keeping a name's faster time). */
+export async function saveRun(env, { name, key, address, count, mode, time, ping, run }) {
+  const problem = await playerProblem(env, name, key);
+  if (problem) return { error: problem };
+  const nameKey = name.toLowerCase();
   const now = Date.now();
-  const holder = await env.DB.prepare("SELECT name, owner FROM names WHERE name_key = ?1").bind(nameKey).first();
-  if (holder && holder.owner !== owner) return json({ error: "That name is already taken." }, 409, cors);
+  const holder = await env.DB.prepare("SELECT name FROM names WHERE name_key = ?1").bind(nameKey).first();
   const shownName = holder ? holder.name : name;
   if (!holder) {
-    if (!(await mayClaimName(request, env))) return json({ error: "Too many new names today. Try again tomorrow." }, 429, cors);
+    if (!(await mayClaimName(address, env))) return { error: "Too many new names today. Try again tomorrow." };
     await env.DB.prepare("INSERT INTO names (name_key, name, owner, created_at) VALUES (?1, ?2, ?3, ?4)")
-      .bind(nameKey, name, owner, now).run();
+      .bind(nameKey, name, await sha256(key), now).run();
   }
-
-  // Only ever keeps the faster time.
   await env.DB.prepare(
-    `INSERT INTO scores (count, mode, name_key, name, time_ms, ping, updated_at, run) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `INSERT INTO ranked_scores (count, mode, name_key, name, time_ms, ping, updated_at, run) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
      ON CONFLICT (count, mode, name_key) DO UPDATE SET time_ms = excluded.time_ms, ping = excluded.ping,
        name = excluded.name, updated_at = excluded.updated_at, run = excluded.run
-     WHERE excluded.time_ms < scores.time_ms`
+     WHERE excluded.time_ms < ranked_scores.time_ms`
   ).bind(count, mode, nameKey, shownName, time, ping, now, JSON.stringify(run)).run();
   boardCache.clear();
-
-  const best = await env.DB.prepare("SELECT time_ms FROM scores WHERE count = ?1 AND mode = ?2 AND name_key = ?3")
+  const best = await env.DB.prepare("SELECT time_ms FROM ranked_scores WHERE count = ?1 AND mode = ?2 AND name_key = ?3")
     .bind(count, mode, nameKey).first();
-  const ahead = await env.DB.prepare("SELECT COUNT(*) AS n FROM scores WHERE count = ?1 AND mode = ?2 AND time_ms < ?3")
+  const ahead = await env.DB.prepare("SELECT COUNT(*) AS n FROM ranked_scores WHERE count = ?1 AND mode = ?2 AND time_ms < ?3")
     .bind(count, mode, best.time_ms).first();
-  return json({ ok: true, name: shownName, best_ms: best.time_ms, improved: best.time_ms === time, rank: ahead.n + 1 }, 200, cors);
+  return { ok: true, name: shownName, best_ms: best.time_ms, improved: best.time_ms === time, rank: ahead.n + 1 };
+}
+
+/**
+ * One ranked terminal's connection (a Durable Object per terminal, so its state and clock live in
+ * one place for the whole run).
+ */
+export class TerminalSession {
+  constructor(ctx, env) {
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const { 0: client, 1: socket } = new WebSocketPair();
+    socket.accept();
+    const env = this.env;
+    const address = clientKey(request);
+    const session = new Session({
+      send: data => socket.send(JSON.stringify(data)),
+      close: (code, reason) => socket.close(code, reason),
+      checkName: (name, key) => playerProblem(env, name, key),
+      save: run => saveRun(env, { ...run, address })
+    });
+    socket.addEventListener("message", event => { session.onMessage(event.data).catch(error => console.error(error)); });
+    socket.addEventListener("close", () => session.end(1000, "closed"));
+    return new Response(null, { status: 101, webSocket: client });
+  }
 }
 
 async function isAdmin(request, env) {
@@ -244,7 +268,7 @@ async function isAdmin(request, env) {
 async function runRecord(request, url, env, cors) {
   if (!(await isAdmin(request, env))) return json({ error: "Not allowed." }, 401, cors);
   const row = await env.DB.prepare(
-    "SELECT name, time_ms, ping, updated_at, run FROM scores WHERE name_key = ?1 AND count = ?2 AND mode = ?3"
+    `SELECT name, time_ms, ping, updated_at, run FROM ${tableFor(url)} WHERE name_key = ?1 AND count = ?2 AND mode = ?3`
   ).bind(String(url.searchParams.get("name") || "").toLowerCase(), Number(url.searchParams.get("count")), url.searchParams.get("mode")).first();
   if (!row) return json({ error: "No such run." }, 404, cors);
   return json({ ...row, run: row.run ? JSON.parse(row.run) : null }, 200, cors);
@@ -257,9 +281,10 @@ async function remove(request, env, cors) {
   const nameKey = body.name.toLowerCase();
   const removed = await env.DB.batch([
     env.DB.prepare("DELETE FROM scores WHERE name_key = ?1").bind(nameKey),
+    env.DB.prepare("DELETE FROM ranked_scores WHERE name_key = ?1").bind(nameKey),
     env.DB.prepare("DELETE FROM names WHERE name_key = ?1").bind(nameKey),
     ...(body.block ? [env.DB.prepare("INSERT OR IGNORE INTO blocked_names (name_key, blocked_at) VALUES (?1, ?2)").bind(nameKey, Date.now())] : [])
   ]);
   boardCache.clear();
-  return json({ ok: true, scoresRemoved: removed[0].meta.changes, blocked: Boolean(body.block) }, 200, cors);
+  return json({ ok: true, scoresRemoved: removed[0].meta.changes + removed[1].meta.changes, blocked: Boolean(body.block) }, 200, cors);
 }

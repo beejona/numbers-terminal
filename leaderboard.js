@@ -1,11 +1,12 @@
-import { checkName } from "./namefilter.js?v=10";
+import { checkName } from "./namefilter.js?v=11";
 
 /**
- * The live leaderboard panel. Pick a name once; from then on every run that beats your best for
- * its terminal size and play mode is posted. The board refreshes itself while it's open.
+ * The live leaderboard panel. Pick a name once; from then on your terminals are ranked: app.js
+ * plays them through the leaderboard server, which deals them, times them and puts your best on
+ * the board (worker/src/session.js). This panel shows the boards, which refresh while it's open.
  *
- * A name belongs to this browser: a random key made here is sent with every post, and the server
- * only accepts posts for a name from the key that first used it.
+ * A name belongs to this browser: a random key made here goes with every ranked terminal, and the
+ * server only lets the key that first used a name play under it.
  */
 
 // The server is fixed in the page. A ?api= address only works for a copy running on this machine
@@ -24,7 +25,8 @@ const API = (localTestServer() || document.querySelector('meta[name="leaderboard
 const REFRESH_MS = 15_000;
 const NAME_KEY = "numbers-terminal.leaderboard.name";
 const SECRET_KEY = "numbers-terminal.leaderboard.key";
-const BESTS_KEY = "numbers-terminal.leaderboard.bests";
+// Ranked runs on or off (app.js reads it too); on unless switched off.
+const RANKED_KEY = "numbers-terminal.leaderboard.ranked";
 const MODE_LABELS = { click: "Click", drop: "Drop key", hover: "Hover" };
 
 const panel = document.getElementById("leaderboard");
@@ -34,8 +36,11 @@ const updated = document.getElementById("lb-updated");
 const nameInput = document.getElementById("lb-name");
 const nameNote = document.getElementById("lb-name-note");
 const saveButton = document.getElementById("lb-save");
+const rankedBox = document.getElementById("lb-ranked");
+const oldButton = document.getElementById("lb-old");
+const oldNote = document.getElementById("lb-old-note");
 
-let view = { count: currentCount(), mode: "all" };
+let view = { count: currentCount(), mode: "all", old: false };
 let refreshTimer = 0;
 let lastLoaded = 0;
 let checkTimer = 0;
@@ -77,11 +82,6 @@ function currentCount() {
   return Number(settings.numberCount) === 10 ? 10 : 14;
 }
 
-/** This browser's best per size and mode, as { "14": { click: { time_ms, ping, run, posted } } }. */
-function bests() {
-  return read(BESTS_KEY, {});
-}
-
 /* ---------- server ---------- */
 
 async function api(path, options) {
@@ -94,78 +94,20 @@ async function api(path, options) {
   return body;
 }
 
-async function postRun(count, mode, run) {
-  const name = read(NAME_KEY, null);
-  if (!name) return null;
-  const result = await api("/v1/scores", {
-    method: "POST",
-    // run.run is the record of the run (app.js) that the server checks the time against.
-    body: JSON.stringify({ name, key: secret(), count, mode, ping: run.ping, time_ms: run.time_ms, run: run.run })
-  });
-  const all = bests();
-  const entry = all[count]?.[mode];
-  if (entry && entry.time_ms >= result.best_ms) entry.posted = true;
-  write(BESTS_KEY, all);
-  return result;
-}
-
-/** A run the server turned down for good (an impossible time, say) mustn't stand as a best that blocks real ones. */
-function forget(count, mode, run, previous) {
-  const all = bests();
-  if (all[count]?.[mode]?.time_ms !== run.time_ms) return;
-  if (previous) all[count][mode] = previous;
-  else delete all[count][mode];
-  write(BESTS_KEY, all);
-}
-
-/** Posts every best that hasn't made it to the server yet (runs from before a name was picked, or offline). */
-async function postPending() {
-  const all = bests();
-  for (const count of Object.keys(all)) {
-    for (const mode of Object.keys(all[count])) {
-      const run = all[count][mode];
-      if (run.posted) continue;
-      try {
-        await postRun(Number(count), mode, run);
-      } catch (error) {
-        if (error.status === 400) {
-          forget(count, mode, run);
-          continue;
-        }
-        setStatus(error.message, "bad");
-        return;
-      }
-    }
-  }
-}
-
 /* ---------- runs ---------- */
 
-window.addEventListener("terminal:finish", async event => {
-  const { seconds, count, mode, ping, run: record } = event.detail;
-  // Rounded the way the page shows it (toFixed), so the board and the Best box always agree.
-  const time = Math.round(Number(seconds.toFixed(3)) * 1000);
-  const all = bests();
-  all[count] ??= {};
-  const previous = all[count][mode];
-  if (previous && previous.time_ms <= time) return;
-  const run = { time_ms: time, ping, run: record, posted: false };
-  all[count][mode] = run;
-  write(BESTS_KEY, all);
-
-  if (!read(NAME_KEY, null) || !API) return;
-  try {
-    const result = await postRun(count, mode, run);
-    setStatus(`${MODE_LABELS[mode]} best posted: #${result.rank} on the ${count} number ${MODE_LABELS[mode].toLowerCase()} board.`, "good");
-    const message = document.getElementById("message");
-    if (!message.hidden) message.append(element("small", `#${Number(result.rank)} on the leaderboard`));
-    if (!panel.hidden) load();
-  } catch (error) {
-    // Refused outright: forget it. Anything else (offline, say) stays pending and goes up later.
-    if (error.status === 400) forget(count, mode, run, previous);
-    setStatus(`Couldn't post that run: ${error.message}`, "bad");
-  }
+// Ranked runs are saved by the server; app.js reports what it said.
+window.addEventListener("terminal:finish", event => {
+  const { count, mode, ranked } = event.detail;
+  if (!ranked) return;
+  const board = `the ${count} number ${MODE_LABELS[mode].toLowerCase()} board`;
+  if (ranked.error) setStatus(`Not ranked: ${ranked.error}`, "bad");
+  else if (ranked.ok) setStatus(`${formatTime(ranked.time_ms)} by the server: ${ranked.improved ? "new best, " : ""}#${Number(ranked.rank)} on ${board}.`, "good");
+  if (!panel.hidden) load();
 });
+
+// Why a terminal wasn't ranked (no connection, say), from app.js.
+window.addEventListener("ranked:notice", event => setStatus(String(event.detail), "bad"));
 
 /* ---------- panel ---------- */
 
@@ -196,7 +138,7 @@ async function load() {
     return;
   }
   try {
-    const board = await api(`/v1/scores?count=${view.count}&mode=${view.mode}`);
+    const board = await api(`/v1/scores?count=${view.count}&mode=${view.mode}${view.old ? "&old=1" : ""}`);
     const scores = Array.isArray(board.scores) ? board.scores : [];
     if (scores.length === 0) {
       showNote(`No times yet${view.mode === "all" ? "" : ` for ${MODE_LABELS[view.mode].toLowerCase()}`}. Be the first.`);
@@ -258,12 +200,11 @@ setInterval(showUpdated, 1000);
 
 function showName() {
   const name = read(NAME_KEY, null);
-  if (name) {
-    nameInput.value = name;
-    setStatus(`Posting as ${name}. Your new bests go up automatically.`, "good");
-  } else {
-    setStatus("Pick a name to put your bests on the board.");
-  }
+  rankedBox.checked = read(RANKED_KEY, true) !== false;
+  if (name) nameInput.value = name;
+  if (!name) setStatus("Pick a name to play ranked.");
+  else if (!rankedBox.checked) setStatus(`Ranked runs are off: terminals are practice.`);
+  else setStatus(`Playing ranked as ${name}. The server deals and times each terminal, so your real ping counts.`, "good");
 }
 
 async function checkAvailability(name) {
@@ -311,14 +252,10 @@ document.getElementById("lb-name-form").addEventListener("submit", async event =
       nameNote.dataset.tone = "bad";
       return;
     }
+    secret(); // made now, so the next terminal can play ranked
     write(NAME_KEY, name);
-    // A new name hasn't posted anything yet.
-    const all = bests();
-    for (const count of Object.keys(all)) for (const mode of Object.keys(all[count])) all[count][mode].posted = false;
-    write(BESTS_KEY, all);
     nameNote.textContent = "";
     showName();
-    await postPending();
     load();
   } catch (error) {
     nameNote.textContent = error.message;
@@ -338,6 +275,13 @@ for (const button of panel.querySelectorAll("[data-count]")) {
 for (const button of panel.querySelectorAll("[data-mode]")) {
   button.addEventListener("click", () => { view.mode = button.dataset.mode; selectTab("mode", view.mode); load(); });
 }
+rankedBox.addEventListener("change", () => { write(RANKED_KEY, rankedBox.checked); showName(); });
+oldButton.addEventListener("click", () => {
+  view.old = !view.old;
+  oldButton.textContent = view.old ? "Back to ranked times" : "Old times";
+  oldNote.hidden = !view.old;
+  load();
+});
 
 document.addEventListener("keydown", event => {
   // The page's own keys (and the drop key) come first.
@@ -348,4 +292,3 @@ document.addEventListener("keydown", event => {
 
 selectTab("mode", view.mode);
 showName();
-if (read(NAME_KEY, null) && API) postPending();

@@ -125,8 +125,25 @@ function loadBest() {
 function newTerminal() {
   const count = paneCount();
   applyGrid(count);
-  panes = shuffle(Array.from({ length: count }, (_, index) => index + 1))
-    .map(number => ({ number, clicked: false, predicted: false }));
+  // A terminal still being dealt is dropped for this one.
+  if (dealing) {
+    clearTimeout(dealing.timer);
+    dealing = null;
+  }
+  const player = rankedPlayer();
+  if (player) dealRanked(count, player);
+  else startTerminal(practiceLayout(count), null);
+}
+
+function practiceLayout(count) {
+  return shuffle(Array.from({ length: count }, (_, index) => index + 1));
+}
+
+/** Puts a terminal in play: [layout] is its numbers row by row; [rankedTerminal] if the server runs it. */
+function startTerminal(layout, rankedTerminal) {
+  applyGrid(layout.length);
+  panes = layout.map(number => ({ number, clicked: false, predicted: false }));
+  ranked = rankedTerminal;
   best = loadBest();
   elements.best.textContent = formatTime(best);
   misclicks = 0;
@@ -227,7 +244,13 @@ function clickPane(index, via = "down") {
     return;
   }
 
+  // Ranked, one pane at a time as in game: the next click needs the server's new window.
+  if (ranked && ranked.awaiting >= 0) return;
   recordClick(index, via);
+  if (ranked) {
+    sendRankedClick(pane, index, via);
+    return;
+  }
 
   // With client prediction the pane clears immediately; otherwise it waits for the "server",
   // which is what ping simulates here.
@@ -268,9 +291,10 @@ function flashWrong(index) {
   slot.classList.add("wrong");
 }
 
-function finish() {
+/** Ends the run. [result] is the server's word on a ranked one: its time, and where it landed. */
+function finish(result = null) {
   running = false;
-  const seconds = (performance.now() - startedAt) / 1000;
+  const seconds = result ? result.time_ms / 1000 : (performance.now() - startedAt) / 1000;
   elements.time.textContent = formatTime(seconds);
   elements.time.classList.remove("running");
   elements.last.textContent = formatTime(seconds);
@@ -283,14 +307,15 @@ function finish() {
   }
   elements.best.textContent = formatTime(best);
 
-  elements.message.innerHTML = `${isBest ? "New best!" : "Solved"} ${formatTime(seconds)}` +
-    `<small>${settings.autoRestart ? "Next terminal opening..." : "Press R for another"}</small>`;
-  elements.message.hidden = false;
+  const next = settings.autoRestart ? "Next terminal opening..." : "Press R for another";
+  const ranking = !result ? "" : result.error ? `Not ranked: ${result.error}` : result.ok ? `#${Number(result.rank)} on the leaderboard` : "";
+  showMessage(`${isBest ? "New best!" : "Solved"} ${formatTime(seconds)}`, ...(ranking ? [ranking, next] : [next]));
 
-  // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
+  // For the leaderboard panel (leaderboard.js).
   window.dispatchEvent(new CustomEvent("terminal:finish", {
-    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, run: finishRecord() }
+    detail: { seconds, count: paneCount(), mode: runMode(), ranked: result }
   }));
+  ranked = null;
 
   if (settings.autoRestart) setTimeout(newTerminal, 800);
 }
@@ -373,10 +398,178 @@ function recordClick(index, via) {
   });
 }
 
-function finishRecord() {
+/** The message over the terminal: a line, and smaller lines under it (all plain text). */
+function showMessage(title, ...details) {
+  elements.message.replaceChildren(document.createTextNode(title));
+  for (const detail of details) elements.message.append(Object.assign(document.createElement("small"), { textContent: detail }));
+  elements.message.hidden = false;
+}
+
+/* ---------- ranked terminals ---------- */
+
+// With a leaderboard name (and Ranked runs on), terminals are played through the leaderboard
+// server the way SkyBlock's are (worker/src/session.js): it deals the terminal, every click goes to
+// it with the menu's current window id, it clears panes on its ticks, and it times the run. So the
+// Ping setting doesn't apply - your real ping does. Otherwise terminals are local practice.
+
+const DEAL_TIMEOUT_MS = 5000;
+/** The ranked terminal in play: { id, window, awaiting (pane waiting on the server, or -1), sentPath }. */
+let ranked = null;
+/** A ranked terminal asked for and not dealt yet: { id, count, timer }. */
+let dealing = null;
+/** The connection to the server, kept open between terminals (the server closes it when idle). */
+let socket = null;
+let socketOpen = null;
+let rankedSerial = 0;
+
+function stored(key) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? null : JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+/** The leaderboard server (leaderboard.js has the same rule: ?api= only for a copy on this machine). */
+function leaderboardApi() {
+  let api = document.querySelector('meta[name="leaderboard-api"]')?.content || "";
+  const wanted = new URLSearchParams(location.search).get("api");
+  const local = new Set(["localhost", "127.0.0.1"]);
+  if (wanted && local.has(location.hostname)) {
+    try {
+      if (local.has(new URL(wanted).hostname)) api = wanted;
+    } catch { /* not an address */ }
+  }
+  return api.replace(/\/$/, "");
+}
+
+/** Who plays ranked: a saved leaderboard name and its browser key, if Ranked runs is on. */
+function rankedPlayer() {
+  const api = leaderboardApi();
+  const name = stored("numbers-terminal.leaderboard.name");
+  const key = stored("numbers-terminal.leaderboard.key");
+  if (!api || typeof name !== "string" || typeof key !== "string") return null;
+  if (stored("numbers-terminal.leaderboard.ranked") === false) return null;
+  return { api, name, key };
+}
+
+function connect(api) {
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return socketOpen;
+  const connection = new WebSocket(api.replace(/^http/, "ws") + "/v1/play");
+  socket = connection;
+  socketOpen = new Promise((resolve, reject) => {
+    connection.addEventListener("open", () => resolve(connection), { once: true });
+    connection.addEventListener("error", () => reject(new Error("Couldn't reach the leaderboard.")), { once: true });
+  });
+  socketOpen.catch(() => {});
+  connection.addEventListener("message", event => {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    fromServer(message);
+  });
+  connection.addEventListener("close", () => {
+    if (socket === connection) socket = null;
+    if (dealing) practiceInstead("Lost the leaderboard connection, so this one's practice.");
+    else if (ranked && running) {
+      running = false;
+      ranked = null;
+      showMessage("Lost the connection to the leaderboard", "Press R for another");
+    }
+  });
+  return socketOpen;
+}
+
+async function dealRanked(count, player) {
+  running = false;
+  const id = ++rankedSerial;
+  dealing = { id, count, timer: setTimeout(() => {
+    if (dealing?.id === id) practiceInstead("The leaderboard didn't answer in time, so this one's practice.");
+  }, DEAL_TIMEOUT_MS) };
+  showMessage("Dealing a ranked terminal...");
+  try {
+    const connection = await connect(player.api);
+    if (dealing?.id !== id) return;
+    connection.send(JSON.stringify({ type: "start", id, count, mode: runMode(), name: player.name, key: player.key }));
+  } catch (error) {
+    if (dealing?.id === id) practiceInstead(`${error.message} This one's practice.`);
+  }
+}
+
+function practiceInstead(reason) {
+  const count = dealing ? dealing.count : paneCount();
+  clearTimeout(dealing?.timer);
+  dealing = null;
+  window.dispatchEvent(new CustomEvent("ranked:notice", { detail: reason }));
+  startTerminal(practiceLayout(count), null);
+}
+
+function fromServer(message) {
+  if (message.type === "kicked") {
+    running = false;
+    ranked = null;
+    showMessage("Kicked by the leaderboard", String(message.reason || ""), "Press R for another");
+    return;
+  }
+  if (message.type === "terminal" || message.type === "error") {
+    if (!dealing || message.id !== dealing.id) return;
+    if (message.type === "error") {
+      practiceInstead(`Not ranked: ${message.error}`);
+      return;
+    }
+    clearTimeout(dealing.timer);
+    dealing = null;
+    socket?.send(JSON.stringify({ type: "ready" }));
+    startTerminal(message.layout, { id: message.id, window: message.window, awaiting: -1, sentPath: 0 });
+    return;
+  }
+  if (!ranked || message.id !== ranked.id) return;
+  if (message.type === "cleared") paneCleared(message.i, message.window, null);
+  else if (message.type === "done") paneCleared(message.i, null, message);
+}
+
+/** Sends a click to the server, with this browser's record of it; the pane clears when it answers. */
+function sendRankedClick(pane, index, via) {
+  ranked.awaiting = index;
+  if (panes.every(other => other === pane || other.clicked)) finishing = true;
+  if (settings.clientPrediction) {
+    pane.predicted = true;
+    render();
+    // Odin reloads the terminal if the server hasn't answered by the resolve timeout.
+    ranked.prediction = setTimeout(() => {
+      if (!pane.clicked) {
+        pane.predicted = false;
+        render();
+      }
+    }, settings.resolveTimeout);
+  }
+  const click = record.clicks[record.clicks.length - 1];
   const geometry = gridGeometry();
-  if (!record || !geometry) return null;
-  return { ...record, fill: [round(geometry.fillX, 3), round(geometry.fillY, 3)] };
+  socket?.send(JSON.stringify({
+    type: "click", window: ranked.window, i: index,
+    t: click.t, x: click.x, y: click.y, via, pointer: click.type,
+    path: record.path.slice(ranked.sentPath),
+    fill: geometry ? [round(geometry.fillX, 3), round(geometry.fillY, 3)] : null
+  }));
+  ranked.sentPath = record.path.length;
+}
+
+/** The server cleared a pane: the next one can be clicked (with [window]), or the run is [done]. */
+function paneCleared(index, window, done) {
+  const pane = panes[index];
+  if (!pane || !ranked) return;
+  clearTimeout(ranked.prediction);
+  ranked.awaiting = -1;
+  ranked.window = window;
+  pane.clicked = true;
+  pane.predicted = false;
+  render();
+  if (done) finish(done);
+  else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, "hover");
 }
 
 document.addEventListener("pointermove", event => track(event), { capture: true, passive: true });

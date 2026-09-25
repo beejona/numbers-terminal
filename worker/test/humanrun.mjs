@@ -10,13 +10,16 @@ export function randomSource(seed = 1) {
   };
 }
 
-export function humanRun({ count, mode = "click", time, ping = 0, random = randomSource(7), touch = false }) {
+export function humanRun({ count, mode = "click", time, ping = 0, random = randomSource(7), touch = false, layout: given = null }) {
   const columns = count / 2;
   const fill = [1, 1];
-  const layout = Array.from({ length: count }, (_, i) => i + 1);
-  for (let i = layout.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [layout[i], layout[j]] = [layout[j], layout[i]];
+  // The terminal's layout (as the server dealt it), or a random one.
+  const layout = given ? [...given] : Array.from({ length: count }, (_, i) => i + 1);
+  if (!given) {
+    for (let i = layout.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [layout[i], layout[j]] = [layout[j], layout[i]];
+    }
   }
   // Uneven gaps that add up to the run: the first pane after a moment, the last clear at `time`.
   const end = time - ping - 1;

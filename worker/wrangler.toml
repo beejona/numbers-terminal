@@ -10,6 +10,15 @@ database_name = "numbers-terminal-leaderboard"
 database_id = "65b008b0-bbca-43f5-91bf-ea44cdb9a8bf"
 migrations_dir = "migrations"
 
+# One Durable Object per ranked terminal: the connection's state and clock (src/session.js).
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "TerminalSession"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TerminalSession"]
+
 [vars]
 # Pages allowed to call the leaderboard from a browser. (Local testing runs its own server.)
 ALLOWED_ORIGINS = "https://beejona.github.io"
