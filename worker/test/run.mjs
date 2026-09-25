@@ -81,6 +81,11 @@ check(r.body.scores.length === 1 && r.body.scores[0].name === "TenGuy", "the 10 
 r = await call("GET", "/v1/scores?count=14&mode=all", undefined, { Origin: "https://evil.example" });
 check(!r.headers.get("Access-Control-Allow-Origin"), "other sites don't get CORS access");
 
+for (const [count, time, ok] of [[10, 499, false], [10, 500, true], [14, 499, false], [14, 380, false]]) {
+  r = await call("POST", "/v1/scores", run({ name: `Edge${count}x${time}`, key: "7".repeat(64), count, time_ms: time }));
+  check(ok ? r.status === 200 : r.status === 400, `${time} ms for ${count} numbers is ${ok ? "accepted" : "refused"} (floor is 0.5 s)`);
+}
+
 const owner = (await import("node:crypto")).createHash("sha256").update(keyA).digest("hex");
 r = await call("GET", `/v1/name?name=BEEJONA&owner=${owner}`);
 check(r.body.status === "yours", "name check: yours");

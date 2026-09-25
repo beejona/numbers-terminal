@@ -52,7 +52,7 @@ its ping.
   when spelled with numbers, underscores or repeated letters (`namefilter.js`).
 - A name belongs to the browser that first used it, so nobody else can post under it.
 - Times come from the browser, so they can't be proven; the server only turns down impossible ones
-  (under 25 ms a pane). Names and times can be taken off by hand (see `worker/`).
+  (anything under half a second). Names and times can be taken off by hand (see `worker/`).
 
 The server is a Cloudflare Worker with a D1 database, in `worker/`. `node worker/test/run.mjs`
 tests it, and `node worker/test/serve.mjs` runs it locally on port 8787 (open the page with
