@@ -125,25 +125,8 @@ function loadBest() {
 function newTerminal() {
   const count = paneCount();
   applyGrid(count);
-  // A terminal still being dealt is dropped for this one.
-  if (dealing) {
-    clearTimeout(dealing.timer);
-    dealing = null;
-  }
-  const player = rankedPlayer();
-  if (player) dealRanked(count, player);
-  else startTerminal(practiceLayout(count), null);
-}
-
-function practiceLayout(count) {
-  return shuffle(Array.from({ length: count }, (_, index) => index + 1));
-}
-
-/** Puts a terminal in play: [layout] is its numbers row by row; [rankedTerminal] if the server runs it. */
-function startTerminal(layout, rankedTerminal) {
-  applyGrid(layout.length);
-  panes = layout.map(number => ({ number, clicked: false, predicted: false }));
-  ranked = rankedTerminal;
+  panes = shuffle(Array.from({ length: count }, (_, index) => index + 1))
+    .map(number => ({ number, clicked: false, predicted: false }));
   best = loadBest();
   elements.best.textContent = formatTime(best);
   misclicks = 0;
@@ -158,16 +141,13 @@ function startTerminal(layout, rankedTerminal) {
   elements.best.classList.remove("fresh");
   build();
   render();
-  startRecord();
 }
 
 /** The number that has to be clicked next, or null once the terminal is solved. */
 function nextNumber() {
   let next = null;
   for (const pane of panes) {
-    // Ranked terminals are pingless: a pane counts as cleared the moment it's clicked.
-    const cleared = pane.clicked || (ranked !== null && pane.predicted);
-    if (!cleared && (next === null || pane.number < next)) next = pane.number;
+    if (!pane.clicked && (next === null || pane.number < next)) next = pane.number;
   }
   return next;
 }
@@ -184,18 +164,13 @@ function build() {
       Object.assign(document.createElement("span"), { className: "count" })
     );
     slot.addEventListener("pointerdown", event => {
-      // Only real presses: clicks a script makes up don't play the terminal.
-      if (event.button !== 0 || !event.isTrusted) return;
+      if (event.button !== 0) return;
       event.preventDefault();
-      // The press is a point on the path too: the pointer is on this pane now.
-      track(event);
-      clickPane(index, "down", eventTime(event));
+      clickPane(index);
     });
-    slot.addEventListener("pointerenter", event => {
-      if (!event.isTrusted) return;
-      track(event);
+    slot.addEventListener("pointerenter", () => {
       hoveredIndex = index;
-      if (hoverClicks()) clickPane(index, "hover", eventTime(event));
+      if (hoverClicks()) clickPane(index, true);
     });
     slot.addEventListener("pointerleave", () => {
       if (hoveredIndex === index) hoveredIndex = -1;
@@ -228,12 +203,7 @@ function hoverClicks() {
   return settings.hoverMode || (settings.dropKey && dropKeyHeld);
 }
 
-/**
- * Clears a pane if it's the next one. [via] is how: "down" (pressed), "hover" or "key" (drop key);
- * [time] is when that happened (now, if not given).
- */
-function clickPane(index, via = "down", time) {
-  const viaHover = via !== "down";
+function clickPane(index, viaHover = false) {
   const pane = panes[index];
   if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
   // First click protection: the mod swallows clicks for a moment after the terminal opens.
@@ -247,12 +217,6 @@ function clickPane(index, via = "down", time) {
       elements.misclicks.textContent = String(misclicks);
       flashWrong(index);
     }
-    return;
-  }
-
-  recordClick(index, via, time);
-  if (ranked) {
-    sendRankedClick(pane, index, via);
     return;
   }
 
@@ -281,7 +245,7 @@ function clickPane(index, via = "down", time) {
     pane.predicted = false;
     render();
     if (solved) finish();
-    else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, "hover");
+    else if (hoverClicks() && hoveredIndex >= 0) clickPane(hoveredIndex, true);
   };
   if (settings.ping > 0) setTimeout(resolve, settings.ping);
   else resolve();
@@ -295,10 +259,9 @@ function flashWrong(index) {
   slot.classList.add("wrong");
 }
 
-/** Ends the run. [result] is the server's word on a ranked one: its time, and where it landed. */
-function finish(result = null) {
+function finish() {
   running = false;
-  const seconds = result ? result.time_ms / 1000 : (performance.now() - startedAt) / 1000;
+  const seconds = (performance.now() - startedAt) / 1000;
   elements.time.textContent = formatTime(seconds);
   elements.time.classList.remove("running");
   elements.last.textContent = formatTime(seconds);
@@ -311,309 +274,17 @@ function finish(result = null) {
   }
   elements.best.textContent = formatTime(best);
 
-  const next = settings.autoRestart ? "Next terminal opening..." : "Press R for another";
-  const ranking = !result ? "" : result.error ? `Not ranked: ${result.error}` : result.ok ? `#${Number(result.rank)} on the leaderboard` : "";
-  showMessage(`${isBest ? "New best!" : "Solved"} ${formatTime(seconds)}`, ...(ranking ? [ranking, next] : [next]));
+  elements.message.innerHTML = `${isBest ? "New best!" : "Solved"} ${formatTime(seconds)}` +
+    `<small>${settings.autoRestart ? "Next terminal opening..." : "Press R for another"}</small>`;
+  elements.message.hidden = false;
 
-  // For the leaderboard panel (leaderboard.js).
+  // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
   window.dispatchEvent(new CustomEvent("terminal:finish", {
-    detail: { seconds, count: paneCount(), mode: runMode(), ranked: result }
+    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping }
   }));
-  ranked = null;
 
   if (settings.autoRestart) setTimeout(newTerminal, 800);
 }
-
-/* ---------- run record ---------- */
-
-// Each run keeps a record for the leaderboard, whose server checks it before accepting a time:
-// the layout, every pane as it was cleared (when, where the pointer was, and how), and the
-// pointer's path. Positions are in panes from the first pane's top-left corner: x 2.5 is halfway
-// across the third column. Only real input counts - events a script makes up are ignored.
-const PATH_SAMPLE_MS = 16;
-const MAX_PATH = 4000;
-// The server reads two points this close in time (ms) and this far apart (panes) as the pointer
-// being in two places at once (checkrun.js). A very fast flick, reported a thousand times a second,
-// can cover that, so such a point is left out and the next one carries on.
-const SAME_MOMENT_MS = 1.5;
-const TELEPORT = 0.25;
-let record = null;
-let pathPane = null;
-/** The latest real pointer event's position, in page pixels, and what made it. */
-let pointer = null;
-
-function round(value, places) {
-  const scale = 10 ** places;
-  return Math.round(value * scale) / scale;
-}
-
-/** Where the panes are on the page right now: the first one's corner, the pitch, and how much of it a pane fills. */
-function gridGeometry() {
-  const slots = elements.terminal.children;
-  const columns = Math.ceil(panes.length / ROWS);
-  if (slots.length <= columns) return null;
-  const first = slots[0].getBoundingClientRect();
-  const pitchX = slots[1].getBoundingClientRect().left - first.left;
-  const pitchY = slots[columns].getBoundingClientRect().top - first.top;
-  if (!(pitchX > 0 && pitchY > 0)) return null;
-  return { left: first.left, top: first.top, pitchX, pitchY, fillX: first.width / pitchX, fillY: first.height / pitchY, columns };
-}
-
-function toPanes(clientX, clientY, geometry) {
-  return [(clientX - geometry.left) / geometry.pitchX, (clientY - geometry.top) / geometry.pitchY];
-}
-
-function paneAt(x, y, geometry) {
-  const column = Math.floor(x);
-  const row = Math.floor(y);
-  if (column < 0 || column >= geometry.columns || row < 0 || row >= ROWS) return -1;
-  if (x - column > geometry.fillX || y - row > geometry.fillY) return -1;
-  return row * geometry.columns + column;
-}
-
-function startRecord() {
-  record = { layout: panes.map(pane => pane.number), clicks: [], path: [] };
-  pathPane = null;
-}
-
-/**
- * When an input event happened, on the run's clock. Browsers hand the page mouse moves once a
- * frame - and all at once just before a press - so the moment the page gets round to a move can be
- * a frame after the pointer really got there, which made quick players look like they pressed in the
- * same instant they arrived. The event's own time stamp is when it happened.
- */
-function eventTime(event) {
-  const now = performance.now();
-  const stamp = event ? event.timeStamp : undefined;
-  // (Very old browsers stamp events on another clock: then the moment it's handled will have to do.)
-  const at = typeof stamp === "number" && stamp <= now + 1 && stamp >= now - 1000 ? stamp : now;
-  return Math.max(0, at - startedAt);
-}
-
-/**
- * Notes a real pointer event: where the pointer is, and (unless [sample] is false) points on its
- * path - every move onto another pane, and otherwise about one a frame - including the positions
- * the browser batched into this event since the last one.
- */
-function track(event, sample = true) {
-  if (!event.isTrusted) return;
-  pointer = { clientX: event.clientX, clientY: event.clientY, type: event.pointerType || "mouse" };
-  if (!sample || !running || !record) return;
-  const geometry = gridGeometry();
-  if (!geometry) return;
-  const batched = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
-  for (const move of batched.length ? batched : [event]) addPathPoint(move, geometry);
-}
-
-function addPathPoint(move, geometry) {
-  const last = record.path[record.path.length - 1];
-  const t = round(eventTime(move), 1);
-  // A batch can hold positions from before one already on the path (pointerenter comes ahead of
-  // the pointermove it belongs to): the path only goes forward in time.
-  if (last && t < last[0]) return;
-  const [x, y] = toPanes(move.clientX, move.clientY, geometry);
-  if (last && t - last[0] <= SAME_MOMENT_MS && Math.hypot(x - last[1], y - last[2]) > TELEPORT) return;
-  const pane = paneAt(x, y, geometry);
-  if (record.path.length < MAX_PATH && (pane !== pathPane || !last || t - last[0] >= PATH_SAMPLE_MS)) {
-    record.path.push([t, round(x, 3), round(y, 3)]);
-    pathPane = pane;
-  }
-}
-
-/** A cleared pane on the record: [time] is when the press (or hover, or key) happened. */
-function recordClick(index, via, time) {
-  if (!record) return;
-  const geometry = gridGeometry();
-  const [x, y] = pointer && geometry ? toPanes(pointer.clientX, pointer.clientY, geometry) : [null, null];
-  const last = record.clicks[record.clicks.length - 1];
-  const t = Math.max(time ?? eventTime(null), last ? last.t : 0);
-  record.clicks.push({
-    i: index, t: round(t, 1),
-    x: x === null ? null : round(x, 3), y: y === null ? null : round(y, 3),
-    via, type: pointer ? pointer.type : null
-  });
-}
-
-/** The message over the terminal: a line, and smaller lines under it (all plain text). */
-function showMessage(title, ...details) {
-  elements.message.replaceChildren(document.createTextNode(title));
-  for (const detail of details) elements.message.append(Object.assign(document.createElement("small"), { textContent: detail }));
-  elements.message.hidden = false;
-}
-
-/* ---------- ranked terminals ---------- */
-
-// With a leaderboard name (and Ranked runs on), terminals are played through the leaderboard
-// server the way SkyBlock's pingless terminals are (worker/src/session.js): it deals the terminal,
-// clicks count at once and go to it, it clears at most one pane a tick with only a few rapid
-// clicks queued (one too many is rejected and comes back), and it times the run. So the Ping
-// setting doesn't apply - your real ping adds once. Otherwise terminals are local practice.
-
-const DEAL_TIMEOUT_MS = 5000;
-/** The ranked terminal in play: { id, sentPath (how much of the pointer's path has gone to the server) }. */
-let ranked = null;
-/** A ranked terminal asked for and not dealt yet: { id, count, timer }. */
-let dealing = null;
-/** The connection to the server, kept open between terminals (the server closes it when idle). */
-let socket = null;
-let socketOpen = null;
-let rankedSerial = 0;
-
-function stored(key) {
-  try {
-    const value = localStorage.getItem(key);
-    return value === null ? null : JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-/** The leaderboard server (leaderboard.js has the same rule: ?api= only for a copy on this machine). */
-function leaderboardApi() {
-  let api = document.querySelector('meta[name="leaderboard-api"]')?.content || "";
-  const wanted = new URLSearchParams(location.search).get("api");
-  const local = new Set(["localhost", "127.0.0.1"]);
-  if (wanted && local.has(location.hostname)) {
-    try {
-      if (local.has(new URL(wanted).hostname)) api = wanted;
-    } catch { /* not an address */ }
-  }
-  return api.replace(/\/$/, "");
-}
-
-/** Who plays ranked: a saved leaderboard name and its browser key, if Ranked runs is on. */
-function rankedPlayer() {
-  const api = leaderboardApi();
-  const name = stored("numbers-terminal.leaderboard.name");
-  const key = stored("numbers-terminal.leaderboard.key");
-  if (!api || typeof name !== "string" || typeof key !== "string") return null;
-  if (stored("numbers-terminal.leaderboard.ranked") === false) return null;
-  return { api, name, key };
-}
-
-function connect(api) {
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return socketOpen;
-  const connection = new WebSocket(api.replace(/^http/, "ws") + "/v1/play");
-  socket = connection;
-  socketOpen = new Promise((resolve, reject) => {
-    connection.addEventListener("open", () => resolve(connection), { once: true });
-    connection.addEventListener("error", () => reject(new Error("Couldn't reach the leaderboard.")), { once: true });
-  });
-  socketOpen.catch(() => {});
-  connection.addEventListener("message", event => {
-    let message;
-    try {
-      message = JSON.parse(event.data);
-    } catch {
-      return;
-    }
-    fromServer(message);
-  });
-  connection.addEventListener("close", () => {
-    if (socket === connection) socket = null;
-    if (dealing) practiceInstead("Lost the leaderboard connection, so this one's practice.");
-    else if (ranked && running) {
-      running = false;
-      ranked = null;
-      showMessage("Lost the connection to the leaderboard", "Press R for another");
-    }
-  });
-  return socketOpen;
-}
-
-async function dealRanked(count, player) {
-  running = false;
-  const id = ++rankedSerial;
-  dealing = { id, count, timer: setTimeout(() => {
-    if (dealing?.id === id) practiceInstead("The leaderboard didn't answer in time, so this one's practice.");
-  }, DEAL_TIMEOUT_MS) };
-  showMessage("Dealing a ranked terminal...");
-  try {
-    const connection = await connect(player.api);
-    if (dealing?.id !== id) return;
-    connection.send(JSON.stringify({ type: "start", id, count, mode: runMode(), name: player.name, key: player.key }));
-  } catch (error) {
-    if (dealing?.id === id) practiceInstead(`${error.message} This one's practice.`);
-  }
-}
-
-function practiceInstead(reason) {
-  const count = dealing ? dealing.count : paneCount();
-  clearTimeout(dealing?.timer);
-  dealing = null;
-  window.dispatchEvent(new CustomEvent("ranked:notice", { detail: reason }));
-  startTerminal(practiceLayout(count), null);
-}
-
-function fromServer(message) {
-  if (message.type === "kicked") {
-    running = false;
-    ranked = null;
-    showMessage("Kicked by the leaderboard", String(message.reason || ""), "Press R for another");
-    return;
-  }
-  if (message.type === "terminal" || message.type === "error") {
-    if (!dealing || message.id !== dealing.id) return;
-    if (message.type === "error") {
-      practiceInstead(`Not ranked: ${message.error}`);
-      return;
-    }
-    clearTimeout(dealing.timer);
-    dealing = null;
-    socket?.send(JSON.stringify({ type: "ready" }));
-    startTerminal(message.layout, { id: message.id, sentPath: 0 });
-    return;
-  }
-  if (!ranked || message.id !== ranked.id) return;
-  if (message.type === "cleared") paneCleared(message.i, null);
-  else if (message.type === "done") paneCleared(message.i, message);
-  else if (message.type === "rejected") paneRejected(message.i);
-}
-
-/**
- * Sends a click to the server with this browser's record of it. Pingless: the pane clears now and
- * the next can be clicked straight away; the server confirms it on its tick, or rejects it.
- */
-function sendRankedClick(pane, index, via) {
-  pane.predicted = true;
-  if (panes.every(other => other.clicked || other.predicted)) finishing = true;
-  render();
-  const click = record.clicks[record.clicks.length - 1];
-  const geometry = gridGeometry();
-  socket?.send(JSON.stringify({
-    type: "click", i: index,
-    t: click.t, x: click.x, y: click.y, via, pointer: click.type,
-    path: record.path.slice(ranked.sentPath),
-    fill: geometry ? [round(geometry.fillX, 3), round(geometry.fillY, 3)] : null
-  }));
-  ranked.sentPath = record.path.length;
-}
-
-/** The server cleared a pane on its tick; with [done], that was the last and here's the result. */
-function paneCleared(index, done) {
-  const pane = panes[index];
-  if (!pane || !ranked) return;
-  pane.clicked = true;
-  pane.predicted = false;
-  render();
-  if (done) finish(done);
-}
-
-/**
- * The server didn't take a click (too many rapid clicks queued, as SkyBlock throttles them): that
- * pane comes back, with every pane clicked after it, to be clicked again.
- */
-function paneRejected(index) {
-  const pane = panes[index];
-  if (!pane || !ranked || pane.clicked) return;
-  for (const other of panes) {
-    if (other.predicted && other.number >= pane.number) other.predicted = false;
-  }
-  finishing = false;
-  render();
-}
-
-document.addEventListener("pointermove", event => track(event), { capture: true, passive: true });
 
 /** How the run was played: sweeping without a key, sweeping with the drop key, or clicking. */
 function runMode() {
@@ -742,7 +413,7 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     dropKeyHeld = true;
     // Pressing it while already over a pane counts too, not just moving onto one.
-    if (hoveredIndex >= 0) clickPane(hoveredIndex, "key", eventTime(event));
+    if (hoveredIndex >= 0) clickPane(hoveredIndex, true);
     return;
   }
 

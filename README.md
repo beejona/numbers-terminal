@@ -42,31 +42,21 @@ Settings persist in the browser, and **Reset to Odin defaults** puts them all ba
 
 ## Leaderboard
 
-Press **L** (or the Leaderboard button) and pick a name. From then on your terminals are
-**ranked**: they're played through the leaderboard server the way SkyBlock's terminals are played
-through Hypixel's.
+Press **L** (or the Leaderboard button) and pick a name. From then on, every run that beats your
+best for its terminal size (14 or 10) and play mode (Click, Drop key or Hover) goes up on the
+board by itself, and runs you did before picking a name go up when you save it. The board
+refreshes while it's open; **All** shows everyone's single best, with the mode it was played in and
+its ping.
 
-- The server deals the terminal. Like SkyBlock's pingless terminals, clicks count the moment
-  they're made - the pane clears and the next can be clicked straight away - and go to the server,
-  which clears at most one pane a tick (20 a second) and lets only 5 rapid clicks queue up for that.
-  A click past that is rejected, and it and any pane clicked after it come back to be clicked
-  again. Flooding the server gets you kicked.
-- The server times the run with its own clock, so your real ping adds once (not per pane) and the
-  Ping setting only applies to practice. The fastest anything can clear a terminal is one pane a
-  tick: 0.7 s for 14, 0.5 s for 10, plus ping.
-- The page also sends a record of each run (when and where each pane was cleared, and the
-  pointer's path), which has to look like a person played it (`worker/src/checkrun.js`); a Click
-  run has to be all real clicks.
-- Without a name, or with **Ranked runs** switched off, terminals are practice and aren't saved.
-- Your best for each terminal size (14 or 10) and play mode (Click, Drop key or Hover) is kept.
-  Times from before terminals ran on the server were carried over (cheated ones removed).
 - Names are Minecraft-style (3 to 16 letters, numbers, underscores), and slurs are refused, also
-  when spelled with numbers, underscores or repeated letters (`namefilter.js`). A name belongs to
-  the browser that first used it.
+  when spelled with numbers, underscores or repeated letters (`namefilter.js`).
+- A name belongs to the browser that first used it, so nobody else can post under it.
+- Times come from the browser, so they can't be proven; the server only turns down impossible ones
+  (under 25 ms a pane). Names and times can be taken off by hand (see `worker/`).
 
-The server is a Cloudflare Worker with a D1 database and a Durable Object per ranked terminal, in
-`worker/`. `node worker/test/run.mjs` tests it, and `node worker/test/serve.mjs` runs it locally on
-port 8787 (open the page with `?api=http://127.0.0.1:8787`).
+The server is a Cloudflare Worker with a D1 database, in `worker/`. `node worker/test/run.mjs`
+tests it, and `node worker/test/serve.mjs` runs it locally on port 8787 (open the page with
+`?api=http://127.0.0.1:8787`).
 
 ## Running it locally
 

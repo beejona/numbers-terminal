@@ -10,15 +10,6 @@ database_name = "numbers-terminal-leaderboard"
 database_id = "65b008b0-bbca-43f5-91bf-ea44cdb9a8bf"
 migrations_dir = "migrations"
 
-# One Durable Object per ranked terminal: the connection's state and clock (src/session.js).
-[[durable_objects.bindings]]
-name = "SESSIONS"
-class_name = "TerminalSession"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["TerminalSession"]
-
 [vars]
 # Pages allowed to call the leaderboard from a browser. (Local testing runs its own server.)
 ALLOWED_ORIGINS = "https://beejona.github.io"
@@ -36,3 +27,13 @@ namespace_id = "1002"
 simple = { limit = 10, period = 60 }
 
 # ADMIN_TOKEN (for taking names off the board) is a secret: npx wrangler secret put ADMIN_TOKEN
+
+# Ranked terminals used to run in a Durable Object (TerminalSession). They're gone again; these tell
+# Cloudflare the class existed and has been deleted.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TerminalSession"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["TerminalSession"]
