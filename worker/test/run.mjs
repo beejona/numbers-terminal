@@ -4,7 +4,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
-import worker, { saveRun, playerProblem } from "../src/index.js";
+import worker, { saveRun, saveRefusal, playerProblem } from "../src/index.js";
 import { Session, TerminalGame, TICK_MS, QUEUE_LIMIT, MAX_MESSAGES_PER_SECOND } from "../src/session.js";
 import { checkRun } from "../src/checkrun.js";
 import { humanRun, randomSource } from "./humanrun.mjs";
@@ -93,6 +93,7 @@ async function play({ count = 14, mode = "click", recordMode = mode, think = () 
     send: message => sim.schedule(sim.now() + latency, () => hear(message)), close: () => {},
     checkName: (name, key) => playerProblem(env, name, key),
     save: run => saveRun(env, { ...run, address: "30.0.0.1" }),
+    refused: note => saveRefusal(env, note),
     now: sim.now, wait: sim.wait
   });
   const toServer = message => sim.schedule(sim.now() + latency, () => { session.onMessage(JSON.stringify(message)); });
@@ -183,6 +184,14 @@ check(kicked && !done, "one hammering the server gets kicked, like \"You are cli
 // The page's record still has to check out: hovered panes aren't a click run.
 ({ done } = await play({ player: { name: "Hoverer", key: "d".repeat(64) }, recordMode: "hover" }));
 check(done && /hovered/.test(done.error || "") && !db.prepare("SELECT 1 FROM ranked_scores WHERE name_key = 'hoverer'").get(), `a run whose record fails isn't saved: "${done?.error}"`);
+{
+  const note = db.prepare("SELECT name, count, mode, reason, run FROM refusals ORDER BY id DESC LIMIT 1").get();
+  check(note && note.name === "Hoverer" && note.count === 14 && /hovered/.test(note.reason) && JSON.parse(note.run).clicks.length === 14,
+    "the server keeps a note of why it refused a run, with its record");
+  for (let i = 0; i < 305; i++) await saveRefusal(env, { name: null, count: 10, mode: "click", time: 900, ping: 0, reason: "test", run: {} });
+  check(db.prepare("SELECT COUNT(*) AS n FROM refusals").get().n === 300, "only the latest 300 refusal notes are kept");
+  db.prepare("DELETE FROM refusals").run();
+}
 ({ done } = await play({ mode: "hover", player: { name: "Hoverer", key: "d".repeat(64) }, think: () => 60 }));
 check(done && done.ok, "the same run as a hover run is fine");
 let heard;

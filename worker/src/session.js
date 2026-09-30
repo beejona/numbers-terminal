@@ -115,13 +115,15 @@ export class TerminalGame {
 
 /**
  * One player's connection. [send] and [close] talk to the socket; [save] puts a finished run on
- * the board (index.js) and [checkName] vets a name before the run starts.
+ * the board (index.js), [refused] keeps a note of a run whose record didn't check out, and
+ * [checkName] vets a name before the run starts.
  */
 export class Session {
-  constructor({ send, close, save, checkName, now = () => Date.now(), wait = ms => new Promise(r => setTimeout(r, ms)) }) {
+  constructor({ send, close, save, refused = async () => {}, checkName, now = () => Date.now(), wait = ms => new Promise(r => setTimeout(r, ms)) }) {
     this.send = send;
     this.close = close;
     this.save = save;
+    this.refused = refused;
     this.checkName = checkName;
     this.now = now;
     this.wait = wait;
@@ -219,6 +221,9 @@ export class Session {
     const problem = game.recordProblem();
     if (problem) {
       this.send({ type: "done", id: game.id, i: result.i, time_ms: time, error: problem });
+      try {
+        await this.refused({ name: this.player?.name ?? null, count: game.count, mode: game.mode, time, ping: this.rtt ?? 0, reason: problem, run: game.record });
+      } catch { /* a note that couldn't be kept isn't the player's problem */ }
       return;
     }
     if (!this.player) {

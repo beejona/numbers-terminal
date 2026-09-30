@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 import { readFileSync, readdirSync } from "node:fs";
 import { WebSocketServer } from "ws";
-import worker, { saveRun, playerProblem } from "../src/index.js";
+import worker, { saveRun, saveRefusal, playerProblem } from "../src/index.js";
 import { Session } from "../src/session.js";
 
 const db = new DatabaseSync(process.env.DB_FILE || ":memory:");
@@ -46,7 +46,8 @@ server.on("upgrade", (req, socket, head) => {
       send: data => ws.send(JSON.stringify(data)),
       close: (code, reason) => ws.close(code, reason),
       checkName: (name, key) => playerProblem(env, name, key),
-      save: run => saveRun(env, { ...run, address: req.socket.remoteAddress })
+      save: run => saveRun(env, { ...run, address: req.socket.remoteAddress }),
+      refused: note => saveRefusal(env, note)
     });
     ws.on("message", data => session.onMessage(String(data)).catch(error => console.error(error)));
     ws.on("close", () => session.end(1000, "closed"));

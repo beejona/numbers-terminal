@@ -254,12 +254,23 @@ export class TerminalSession {
       send: data => socket.send(JSON.stringify(data)),
       close: (code, reason) => socket.close(code, reason),
       checkName: (name, key) => playerProblem(env, name, key),
-      save: run => saveRun(env, { ...run, address })
+      save: run => saveRun(env, { ...run, address }),
+      refused: note => saveRefusal(env, note)
     });
     socket.addEventListener("message", event => { session.onMessage(event.data).catch(error => console.error(error)); });
     socket.addEventListener("close", () => session.end(1000, "closed"));
     return new Response(null, { status: 101, webSocket: client });
   }
+}
+
+const REFUSALS_KEPT = 300;
+
+/** Notes a refused ranked run (session.js), keeping only the latest few hundred. */
+export async function saveRefusal(env, { name, count, mode, time, ping, reason, run }) {
+  const row = await env.DB.prepare(
+    `INSERT INTO refusals (created_at, name, count, mode, time_ms, ping, reason, run) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id`
+  ).bind(Date.now(), name, count, mode, time, ping, String(reason), JSON.stringify(run)).first();
+  await env.DB.prepare("DELETE FROM refusals WHERE id <= ?1").bind(row.id - REFUSALS_KEPT).run();
 }
 
 async function isAdmin(request, env) {

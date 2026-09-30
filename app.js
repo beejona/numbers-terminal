@@ -187,14 +187,15 @@ function build() {
       // Only real presses: clicks a script makes up don't play the terminal.
       if (event.button !== 0 || !event.isTrusted) return;
       event.preventDefault();
-      track(event, false);
-      clickPane(index, "down");
+      // The press is a point on the path too: the pointer is on this pane now.
+      track(event);
+      clickPane(index, "down", eventTime(event));
     });
     slot.addEventListener("pointerenter", event => {
       if (!event.isTrusted) return;
       track(event);
       hoveredIndex = index;
-      if (hoverClicks()) clickPane(index, "hover");
+      if (hoverClicks()) clickPane(index, "hover", eventTime(event));
     });
     slot.addEventListener("pointerleave", () => {
       if (hoveredIndex === index) hoveredIndex = -1;
@@ -227,8 +228,11 @@ function hoverClicks() {
   return settings.hoverMode || (settings.dropKey && dropKeyHeld);
 }
 
-/** Clears a pane if it's the next one. [via] is how: "down" (pressed), "hover" or "key" (drop key). */
-function clickPane(index, via = "down") {
+/**
+ * Clears a pane if it's the next one. [via] is how: "down" (pressed), "hover" or "key" (drop key);
+ * [time] is when that happened (now, if not given).
+ */
+function clickPane(index, via = "down", time) {
   const viaHover = via !== "down";
   const pane = panes[index];
   if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
@@ -246,7 +250,7 @@ function clickPane(index, via = "down") {
     return;
   }
 
-  recordClick(index, via);
+  recordClick(index, via, time);
   if (ranked) {
     sendRankedClick(pane, index, via);
     return;
@@ -328,6 +332,11 @@ function finish(result = null) {
 // across the third column. Only real input counts - events a script makes up are ignored.
 const PATH_SAMPLE_MS = 16;
 const MAX_PATH = 4000;
+// The server reads two points this close in time (ms) and this far apart (panes) as the pointer
+// being in two places at once (checkrun.js). A very fast flick, reported a thousand times a second,
+// can cover that, so such a point is left out and the next one carries on.
+const SAME_MOMENT_MS = 1.5;
+const TELEPORT = 0.25;
 let record = null;
 let pathPane = null;
 /** The latest real pointer event's position, in page pixels, and what made it. */
@@ -368,8 +377,23 @@ function startRecord() {
 }
 
 /**
- * Notes a real pointer event: where the pointer is, and (unless [sample] is false) a point on its
- * path - every move onto another pane, and otherwise about one a frame.
+ * When an input event happened, on the run's clock. Browsers hand the page mouse moves once a
+ * frame - and all at once just before a press - so the moment the page gets round to a move can be
+ * a frame after the pointer really got there, which made quick players look like they pressed in the
+ * same instant they arrived. The event's own time stamp is when it happened.
+ */
+function eventTime(event) {
+  const now = performance.now();
+  const stamp = event ? event.timeStamp : undefined;
+  // (Very old browsers stamp events on another clock: then the moment it's handled will have to do.)
+  const at = typeof stamp === "number" && stamp <= now + 1 && stamp >= now - 1000 ? stamp : now;
+  return Math.max(0, at - startedAt);
+}
+
+/**
+ * Notes a real pointer event: where the pointer is, and (unless [sample] is false) points on its
+ * path - every move onto another pane, and otherwise about one a frame - including the positions
+ * the browser batched into this event since the last one.
  */
 function track(event, sample = true) {
   if (!event.isTrusted) return;
@@ -377,22 +401,34 @@ function track(event, sample = true) {
   if (!sample || !running || !record) return;
   const geometry = gridGeometry();
   if (!geometry) return;
-  const [x, y] = toPanes(event.clientX, event.clientY, geometry);
-  const t = performance.now() - startedAt;
-  const pane = paneAt(x, y, geometry);
+  const batched = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
+  for (const move of batched.length ? batched : [event]) addPathPoint(move, geometry);
+}
+
+function addPathPoint(move, geometry) {
   const last = record.path[record.path.length - 1];
+  const t = round(eventTime(move), 1);
+  // A batch can hold positions from before one already on the path (pointerenter comes ahead of
+  // the pointermove it belongs to): the path only goes forward in time.
+  if (last && t < last[0]) return;
+  const [x, y] = toPanes(move.clientX, move.clientY, geometry);
+  if (last && t - last[0] <= SAME_MOMENT_MS && Math.hypot(x - last[1], y - last[2]) > TELEPORT) return;
+  const pane = paneAt(x, y, geometry);
   if (record.path.length < MAX_PATH && (pane !== pathPane || !last || t - last[0] >= PATH_SAMPLE_MS)) {
-    record.path.push([round(t, 1), round(x, 3), round(y, 3)]);
+    record.path.push([t, round(x, 3), round(y, 3)]);
     pathPane = pane;
   }
 }
 
-function recordClick(index, via) {
+/** A cleared pane on the record: [time] is when the press (or hover, or key) happened. */
+function recordClick(index, via, time) {
   if (!record) return;
   const geometry = gridGeometry();
   const [x, y] = pointer && geometry ? toPanes(pointer.clientX, pointer.clientY, geometry) : [null, null];
+  const last = record.clicks[record.clicks.length - 1];
+  const t = Math.max(time ?? eventTime(null), last ? last.t : 0);
   record.clicks.push({
-    i: index, t: round(performance.now() - startedAt, 1),
+    i: index, t: round(t, 1),
     x: x === null ? null : round(x, 3), y: y === null ? null : round(y, 3),
     via, type: pointer ? pointer.type : null
   });
@@ -706,7 +742,7 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     dropKeyHeld = true;
     // Pressing it while already over a pane counts too, not just moving onto one.
-    if (hoveredIndex >= 0) clickPane(hoveredIndex, "key");
+    if (hoveredIndex >= 0) clickPane(hoveredIndex, "key", eventTime(event));
     return;
   }
 
