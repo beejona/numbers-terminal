@@ -52,6 +52,14 @@ let panes = [];
 let startedAt = 0;
 let blockedUntil = 0;
 let misclicks = 0;
+/**
+ * How this run's panes were really cleared: by hovering with hover mode on, or with the drop key.
+ * The leaderboard files a run by these, not by the settings when it ends - they change the moment
+ * they're ticked, so a run swept with the drop key could untick it before its last pane and count
+ * as a click run.
+ */
+let hoveredAny = false;
+let droppedAny = false;
 let running = false;
 /** Which pane the cursor is over, for hover mode. */
 let hoveredIndex = -1;
@@ -130,6 +138,8 @@ function newTerminal() {
   best = loadBest();
   elements.best.textContent = formatTime(best);
   misclicks = 0;
+  hoveredAny = false;
+  droppedAny = false;
   hoveredIndex = -1;
   finishing = false;
   running = true;
@@ -220,6 +230,12 @@ function clickPane(index, viaHover = false) {
     return;
   }
 
+  // A pane cleared without a press: by hover mode if it's on, else it was the drop key.
+  if (viaHover) {
+    if (settings.hoverMode) hoveredAny = true;
+    else droppedAny = true;
+  }
+
   // With client prediction the pane clears immediately; otherwise it waits for the "server",
   // which is what ping simulates here.
   if (settings.clientPrediction) {
@@ -286,9 +302,13 @@ function finish() {
   if (settings.autoRestart) setTimeout(newTerminal, 800);
 }
 
-/** How the run was played: sweeping without a key, sweeping with the drop key, or clicking. */
+/**
+ * How the run was played, from how its panes were cleared: any swept without a key makes it a
+ * hover run, else any cleared with the drop key a drop run; only a run of nothing but presses is
+ * a click run.
+ */
 function runMode() {
-  return settings.hoverMode ? "hover" : settings.dropKey ? "drop" : "click";
+  return hoveredAny ? "hover" : droppedAny ? "drop" : "click";
 }
 
 function formatTime(seconds) {
