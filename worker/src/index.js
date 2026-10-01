@@ -21,6 +21,7 @@ const COUNTS = new Set([10, 14]);
 const MODES = new Set(["click", "drop", "hover"]);
 // No hand clicks panes faster than this, even sweeping over them.
 const MIN_MS_PER_PANE = 25;
+const MIN_CLICK_MS = 900;
 const MAX_TIME_MS = 60_000;
 const MAX_PING = 400;
 const BOARD_SIZE = 100;
@@ -187,7 +188,7 @@ async function post(request, env, cors) {
   if (typeof key !== "string" || !/^[a-f0-9]{32,128}$/.test(key)) return json({ error: "Bad request." }, 400, cors);
   if (!COUNTS.has(count) || !MODES.has(mode)) return json({ error: "Bad request." }, 400, cors);
   if (!Number.isInteger(ping) || ping < 0 || ping > MAX_PING) return json({ error: "Bad request." }, 400, cors);
-  if (!Number.isInteger(time) || time < count * MIN_MS_PER_PANE || time > MAX_TIME_MS) {
+  if (!Number.isInteger(time) || time < count * MIN_MS_PER_PANE || time > MAX_TIME_MS || (mode === "click" && time < MIN_CLICK_MS)) {
     return json({ error: "That time isn't possible." }, 400, cors);
   }
 
