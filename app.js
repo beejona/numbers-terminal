@@ -153,6 +153,8 @@ function newTerminal() {
   elements.best.classList.remove("fresh");
   build();
   render();
+  const slots = elements.terminal.children;
+  runInput.start(slots.length > 1 ? slots[1].getBoundingClientRect().left - slots[0].getBoundingClientRect().left : 0);
 }
 
 /** The number that has to be clicked next, or null once the terminal is solved. */
@@ -178,11 +180,11 @@ function build() {
     slot.addEventListener("pointerdown", event => {
       if (event.button !== 0) return;
       event.preventDefault();
-      clickPane(index);
+      clickPane(index, false, event);
     });
-    slot.addEventListener("pointerenter", () => {
+    slot.addEventListener("pointerenter", event => {
       hoveredIndex = index;
-      if (hoverClicks()) clickPane(index, true);
+      if (hoverClicks()) clickPane(index, true, event);
     });
     slot.addEventListener("pointerleave", () => {
       if (hoveredIndex === index) hoveredIndex = -1;
@@ -215,7 +217,7 @@ function hoverClicks() {
   return settings.hoverMode || (settings.dropKey && dropKeyHeld);
 }
 
-function clickPane(index, viaHover = false) {
+function clickPane(index, viaHover = false, event = null) {
   const pane = panes[index];
   if (!running || finishing || !pane || pane.clicked || pane.predicted) return;
   // First click protection: the mod swallows clicks for a moment after the terminal opens.
@@ -232,6 +234,8 @@ function clickPane(index, viaHover = false) {
     }
     return;
   }
+
+  runInput.clear(viaHover ? "sweep" : "down", event, elements.terminal.children[index]?.getBoundingClientRect());
 
   // A pane cleared without a press: by hover mode if it's on, else it was the drop key.
   if (viaHover) {
@@ -280,6 +284,7 @@ function flashWrong(index) {
 
 function finish() {
   running = false;
+  runInput.stop();
   const seconds = (performance.now() - startedAt) / 1000;
   elements.time.textContent = formatTime(seconds);
   elements.time.classList.remove("running");
@@ -299,7 +304,7 @@ function finish() {
 
   // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
   window.dispatchEvent(new CustomEvent("terminal:finish", {
-    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, misses }
+    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, misses, kept: runInput.assess() }
   }));
 
   if (settings.autoRestart) setTimeout(newTerminal, 800);
@@ -436,7 +441,7 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     dropKeyHeld = true;
     // Pressing it while already over a pane counts too, not just moving onto one.
-    if (hoveredIndex >= 0) clickPane(hoveredIndex, true);
+    if (hoveredIndex >= 0) clickPane(hoveredIndex, true, event);
     return;
   }
 
