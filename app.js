@@ -60,6 +60,7 @@ let misclicks = 0;
  */
 let hoveredAny = false;
 let droppedAny = false;
+let misses = 0;
 let running = false;
 /** Which pane the cursor is over, for hover mode. */
 let hoveredIndex = -1;
@@ -140,6 +141,7 @@ function newTerminal() {
   misclicks = 0;
   hoveredAny = false;
   droppedAny = false;
+  misses = 0;
   hoveredIndex = -1;
   finishing = false;
   running = true;
@@ -222,6 +224,7 @@ function clickPane(index, viaHover = false) {
   if (pane.number !== nextNumber()) {
     // Sweeping the cursor across panes in hover mode isn't a misclick.
     if (viaHover) return;
+    misses += 1;
     if (!settings.blockIncorrect) {
       misclicks += 1;
       elements.misclicks.textContent = String(misclicks);
@@ -296,7 +299,7 @@ function finish() {
 
   // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
   window.dispatchEvent(new CustomEvent("terminal:finish", {
-    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping }
+    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, misses }
   }));
 
   if (settings.autoRestart) setTimeout(newTerminal, 800);

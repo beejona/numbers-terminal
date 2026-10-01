@@ -140,8 +140,11 @@ async function postPending() {
 
 /* ---------- runs ---------- */
 
+const MAX_MISSES = 20;
+
 window.addEventListener("terminal:finish", async event => {
-  const { seconds, count, mode, ping } = event.detail;
+  const { seconds, count, mode, ping, misses } = event.detail;
+  if (misses > MAX_MISSES) return;
   // Rounded the way the page shows it (toFixed), so the board and the Best box always agree.
   const time = Math.round(Number(seconds.toFixed(3)) * 1000);
   const all = bests();
