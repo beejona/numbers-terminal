@@ -54,12 +54,4 @@ its ping.
 - Times come from the browser, so they can't be proven; the server only turns down impossible ones
   (under 25 ms a pane). Names and times can be taken off by hand (see `worker/`).
 
-The server is a Cloudflare Worker with a D1 database, in `worker/`. `node worker/test/run.mjs`
-tests it, and `node worker/test/serve.mjs` runs it locally on port 8787 (open the page with
-`?api=http://127.0.0.1:8787`).
-
-## Running it locally
-
-It's plain HTML, CSS and JavaScript with no build step and no dependencies. Serve the folder with
-`python3 -m http.server` (the leaderboard is a JavaScript module, which browsers won't load from a
-plain `index.html` file).
+The server is a Cloudflare Worker with a D1 database, in `worker/`.

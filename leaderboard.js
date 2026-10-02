@@ -8,19 +8,7 @@ import { checkName } from "./namefilter.js?v=8";
  * only accepts posts for a name from the key that first used it.
  */
 
-// The server is fixed in the page. A ?api= address only works for a copy running on this machine
-// pointed at a local test server: taken from a link, it could send your name key to someone else.
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1"]);
-function localTestServer() {
-  const wanted = new URLSearchParams(location.search).get("api");
-  if (!wanted || !LOCAL_HOSTS.has(location.hostname)) return null;
-  try {
-    return LOCAL_HOSTS.has(new URL(wanted).hostname) ? wanted : null;
-  } catch {
-    return null;
-  }
-}
-const API = (localTestServer() || document.querySelector('meta[name="leaderboard-api"]')?.content || "").replace(/\/$/, "");
+const API = (document.querySelector('meta[name="leaderboard-api"]')?.content || "").replace(/\/$/, "");
 const REFRESH_MS = 15_000;
 const NAME_KEY = "numbers-terminal.leaderboard.name";
 const SECRET_KEY = "numbers-terminal.leaderboard.key";
@@ -99,7 +87,7 @@ async function postRun(count, mode, run) {
   if (!name) return null;
   const result = await api("/v1/scores", {
     method: "POST",
-    body: JSON.stringify({ name, key: secret(), count, mode, ping: run.ping, time_ms: run.time_ms })
+    body: JSON.stringify({ name, key: secret(), count, mode, ping: run.ping, time_ms: run.time_ms, run: run.record })
   });
   const all = bests();
   const entry = all[count]?.[mode];
@@ -124,6 +112,10 @@ async function postPending() {
     for (const mode of Object.keys(all[count])) {
       const run = all[count][mode];
       if (run.posted) continue;
+      if (!run.record) {
+        forget(count, mode, run);
+        continue;
+      }
       try {
         await postRun(Number(count), mode, run);
       } catch (error) {
@@ -140,18 +132,16 @@ async function postPending() {
 
 /* ---------- runs ---------- */
 
-const MAX_MISSES = 20;
-
 window.addEventListener("terminal:finish", async event => {
-  const { seconds, count, mode, ping, misses, kept } = event.detail;
-  if (misses > MAX_MISSES || kept === false) return;
+  const { seconds, count, mode, ping, record } = event.detail;
   // Rounded the way the page shows it (toFixed), so the board and the Best box always agree.
   const time = Math.round(Number(seconds.toFixed(3)) * 1000);
+  if (!runInput.check(record, { count, mode, time_ms: time, ping })) return;
   const all = bests();
   all[count] ??= {};
   const previous = all[count][mode];
   if (previous && previous.time_ms <= time) return;
-  const run = { time_ms: time, ping, posted: false };
+  const run = { time_ms: time, ping, record, posted: false };
   all[count][mode] = run;
   write(BESTS_KEY, all);
 

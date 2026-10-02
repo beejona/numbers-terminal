@@ -16,7 +16,3 @@ this repo. To replace it, put a new one in both places (`npx wrangler secret put
       -H "Content-Type: application/json" \
       -d '{"name": "SomeName", "block": true}' \
       https://numbers-terminal-leaderboard.numbers-terminal-leaderboard.workers.dev/v1/admin/remove
-
-Tests: `node test/run.mjs` (the Worker against node:sqlite standing in for D1) and
-`node test/serve.mjs` (runs it on http://127.0.0.1:8787; open the page with
-`?api=http://127.0.0.1:8787`).

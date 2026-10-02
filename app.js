@@ -154,7 +154,7 @@ function newTerminal() {
   build();
   render();
   const slots = elements.terminal.children;
-  runInput.start(slots.length > 1 ? slots[1].getBoundingClientRect().left - slots[0].getBoundingClientRect().left : 0);
+  runInput.start(slots.length > 1 ? slots[1].getBoundingClientRect().left - slots[0].getBoundingClientRect().left : 0, startedAt);
 }
 
 /** The number that has to be clicked next, or null once the terminal is solved. */
@@ -235,7 +235,7 @@ function clickPane(index, viaHover = false, event = null) {
     return;
   }
 
-  runInput.clear(viaHover ? "sweep" : "down", event, elements.terminal.children[index]?.getBoundingClientRect());
+  runInput.clear(viaHover ? (settings.hoverMode ? "hover" : "drop") : "down", event, elements.terminal.children[index]?.getBoundingClientRect(), index);
 
   // A pane cleared without a press: by hover mode if it's on, else it was the drop key.
   if (viaHover) {
@@ -304,7 +304,7 @@ function finish() {
 
   // For the leaderboard (leaderboard.js), which files runs by terminal size and how they were played.
   window.dispatchEvent(new CustomEvent("terminal:finish", {
-    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, misses, kept: runInput.assess() }
+    detail: { seconds, count: paneCount(), mode: runMode(), ping: settings.ping, record: runInput.record(panes.map(pane => pane.number), settings.ping, misses) }
   }));
 
   if (settings.autoRestart) setTimeout(newTerminal, 800);
@@ -463,9 +463,11 @@ if (typeof window !== "undefined") window.addEventListener("blur", () => { dropK
 const legacyBest = localStorage.getItem(BEST_KEY);
 if (legacyBest && !localStorage.getItem(bestKeyFor(FULL_COUNT))) localStorage.setItem(bestKeyFor(FULL_COUNT), legacyBest);
 
-stopBinding();
-bindControls();
-syncControls();
-applySettings();
-newTerminal();
-requestAnimationFrame(tick);
+if (location.hostname === "beejona.github.io") {
+  stopBinding();
+  bindControls();
+  syncControls();
+  applySettings();
+  newTerminal();
+  requestAnimationFrame(tick);
+}

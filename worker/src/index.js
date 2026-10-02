@@ -1,4 +1,7 @@
 import { checkName } from "../../namefilter.js";
+import "../../input.js";
+
+const { check: checkRun } = globalThis.runInput;
 
 /**
  * The numbers terminal leaderboard.
@@ -26,6 +29,7 @@ const MAX_TIME_MS = 60_000;
 const MAX_PING = 400;
 const BOARD_SIZE = 100;
 const MAX_BODY = 1024;
+const MAX_RUN_BODY = 400_000;
 const NEW_NAMES_PER_DAY = 5;
 const BOARD_CACHE_MS = 10_000;
 
@@ -166,11 +170,11 @@ async function mayClaimName(request, env) {
   return row.n <= NEW_NAMES_PER_DAY;
 }
 
-async function readBody(request) {
+async function readBody(request, limit = MAX_BODY) {
   // Turn big bodies away before reading them.
-  if (Number(request.headers.get("Content-Length") || 0) > MAX_BODY) return null;
+  if (Number(request.headers.get("Content-Length") || 0) > limit) return null;
   const text = await request.text();
-  if (text.length > MAX_BODY) return null;
+  if (text.length > limit) return null;
   try {
     return JSON.parse(text);
   } catch {
@@ -179,7 +183,11 @@ async function readBody(request) {
 }
 
 async function post(request, env, cors) {
-  const body = await readBody(request);
+  const allowed = (env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim());
+  if (!allowed.includes(request.headers.get("Origin") || "") || !(request.headers.get("Content-Type") || "").startsWith("application/json")) {
+    return json({ error: "Not allowed." }, 403, cors);
+  }
+  const body = await readBody(request, MAX_RUN_BODY);
   if (!body) return json({ error: "Bad request." }, 400, cors);
   const { name, key, count, mode, ping, time_ms: time } = body;
 
@@ -191,6 +199,8 @@ async function post(request, env, cors) {
   if (!Number.isInteger(time) || time < count * MIN_MS_PER_PANE || time > MAX_TIME_MS || (mode === "click" && time < MIN_CLICK_MS)) {
     return json({ error: "That time isn't possible." }, 400, cors);
   }
+  if (!body.run) return json({ error: "Refresh the page to post times." }, 400, cors);
+  if (!checkRun(body.run, { count, mode, time_ms: time, ping })) return json({ error: "That time isn't possible." }, 400, cors);
 
   const nameKey = name.toLowerCase();
   if (await env.DB.prepare("SELECT 1 FROM blocked_names WHERE name_key = ?1").bind(nameKey).first()) {
